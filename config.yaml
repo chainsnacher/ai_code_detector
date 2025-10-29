@@ -1,0 +1,120 @@
+# AI Code Detection System Configuration
+
+# Data Collection Settings
+data_collection:
+  human_code:
+    github_api_token: ""  # Set your GitHub API token
+    min_stars: 10
+    max_repos_per_language: 100
+    languages: ["python", "java", "javascript", "cpp", "csharp"]
+    min_file_size: 100
+    max_file_size: 10000
+  
+  ai_code:
+    models: ["gpt-4", "claude-3", "codet5", "codegen"]
+    samples_per_model: 500
+    prompt_templates: 20
+    code_categories: ["algorithms", "data_processing", "web_development", "machine_learning"]
+
+# Feature Engineering
+features:
+  device: "cuda"  # Use "cuda" if GPU is available
+  ast_features:
+    enabled: true
+    max_depth: 20
+    include_complexity: true
+    include_patterns: true
+  
+  statistical_features:
+    enabled: true
+    include_stylometric: true
+    include_lexical: true
+    include_semantic: true
+  
+  embedding_features:
+    enabled: true
+    models: ["codebert", "graphcodebert", "code2vec"]
+    embedding_dim: 768
+    max_length: 512
+  
+  models: ["codebert"]
+
+# Model Configuration
+models:
+  baseline:
+    random_forest:
+      n_estimators: 200
+      max_depth: 20
+      min_samples_split: 5
+      min_samples_leaf: 2
+    
+    svm:
+      kernel: "rbf"
+      C: 1.0
+      gamma: "scale"
+    
+    logistic_regression:
+      C: 1.0
+      max_iter: 1000
+    
+    xgboost:
+      n_estimators: 200
+      max_depth: 6
+      learning_rate: 0.1
+  
+  transformer:
+    model_name: "microsoft/codebert-base"
+    max_length: 512
+    batch_size: 16
+    learning_rate: 2e-5
+    epochs: 10
+    warmup_steps: 100
+  
+  ensemble:
+    meta_classifier: "random_forest"
+    voting_strategy: "soft"
+    confidence_threshold: 0.7
+
+# Database Configuration
+database:
+  type: "sqlite"
+  path: "data/detection_results.db"
+  tables:
+    - "predictions"
+    - "model_performance"
+    - "feature_importance"
+    - "adversarial_tests"
+
+# Web Application
+web_app:
+  title: "Advanced AI Code Detection System"
+  description: "State-of-the-art AI code detection with explainable results"
+  debug: false
+  port: 8501
+  max_file_size: 10  # MB
+  supported_languages: ["python", "java", "javascript", "cpp", "csharp", "go", "rust"]
+
+# Evaluation Settings
+evaluation:
+  random_seed: 42
+  cross_validation:
+    n_folds: 5
+    stratified: true
+  
+  adversarial_testing:
+    enabled: true
+    attack_types: ["substitution", "insertion", "deletion", "reordering"]
+    perturbation_ratio: 0.1
+  
+  metrics:
+    primary: ["accuracy", "f1_score", "precision", "recall"]
+    secondary: ["auc_roc", "auc_pr", "confusion_matrix"]
+    robustness: ["adversarial_accuracy", "confidence_calibration"]
+
+# Logging
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/detection_system.log"
+  max_size: 10  # MB
+  backup_count: 5
