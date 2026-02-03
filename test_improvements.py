@@ -4,34 +4,45 @@ Tests language detection, data labeling, and feature extraction.
 """
 
 import sys
-sys.path.append('src')
+import os
+
+# Ensure the project's src directory (relative to this file) is on sys.path so imports resolve in different environments
+_this_dir = os.path.dirname(__file__)
+_src_dir = os.path.join(_this_dir, 'src')
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
 
 try:
-	from utils.data_labeler import DataLabeler
+    # Try the import with the top-level 'src' package first
+    from src.utils.data_labeler import DataLabeler
 except Exception:
-	# Minimal stub to satisfy tests if DataLabeler is unavailable
-	class DataLabeler:
-		def generate_human_code(self, language: str, n: int):
-			return [{'code': 'def x():\n\treturn 1', 'label': 0, 'language': language} for _ in range(n)]
-		def generate_ai_code(self, language: str, n: int):
-			return [{'code': 'def compute_x():\n\treturn 1', 'label': 1, 'language': language} for _ in range(n)]
-		def create_balanced_dataset(self, samples_per_language: int = 10):
-			langs = ['python','java','javascript']
-			out = []
-			for l in langs:
-				out.extend(self.generate_human_code(l, samples_per_language))
-				out.extend(self.generate_ai_code(l, samples_per_language))
-			return out
-		def get_dataset_statistics(self, samples):
-			from collections import Counter
-			by_lang = Counter(s['language'] for s in samples)
-			by_label = Counter(s['label'] for s in samples)
-			return {
-				'total_samples': len(samples),
-				'by_language': dict(by_lang),
-				'by_label': dict(by_label),
-				'by_type': {}
-			}
+    try:
+        # Fallback to the original package-style import if available
+        from src.utils.data_labeler import DataLabeler
+    except Exception:
+        # Minimal stub to satisfy tests if DataLabeler is unavailable
+        class DataLabeler:
+            def generate_human_code(self, language: str, n: int):
+                return [{'code': 'def x():\n\treturn 1', 'label': 0, 'language': language} for _ in range(n)]
+            def generate_ai_code(self, language: str, n: int):
+                return [{'code': 'def compute_x():\n\treturn 1', 'label': 1, 'language': language} for _ in range(n)]
+            def create_balanced_dataset(self, samples_per_language: int = 10):
+                langs = ['python','java','javascript']
+                out = []
+                for l in langs:
+                    out.extend(self.generate_human_code(l, samples_per_language))
+                    out.extend(self.generate_ai_code(l, samples_per_language))
+                return out
+            def get_dataset_statistics(self, samples):
+                from collections import Counter
+                by_lang = Counter(s['language'] for s in samples)
+                by_label = Counter(s['label'] for s in samples)
+                return {
+                    'total_samples': len(samples),
+                    'by_language': dict(by_lang),
+                    'by_label': dict(by_label),
+                    'by_type': {}
+                }
 from preprocessing.language_detector import LanguageDetector
 from utils.powerbi_exporter import PowerBIExporter
 

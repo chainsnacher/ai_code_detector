@@ -1,0 +1,46 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install build twine
+
+    - name: Build distribution
+      run: python -m build
+
+    - name: Check distribution
+      run: twine check dist/*
+
+    - name: Build Docker image
+      run: docker build -t ai-code-detector:latest .
+
+    - name: Publish to Docker Hub (if tag)
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        echo ${{ secrets.DOCKER_PASSWORD }} | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
+        docker tag ai-code-detector:latest ${{ secrets.DOCKER_USERNAME }}/ai-code-detector:${{ github.ref_name }}
+        docker push ${{ secrets.DOCKER_USERNAME }}/ai-code-detector:${{ github.ref_name }}
+
+    - name: Publish to PyPI (if tag)
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        password: ${{ secrets.PYPI_API_TOKEN }}

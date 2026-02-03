@@ -14,34 +14,37 @@ from typing import Dict, List, Any, Optional
 import argparse
 import json
 import hashlib
+import random
 from datetime import datetime
 
 # Add src to path
-sys.path.append('src')
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
-from utils.config import get_config
-from utils.logger import setup_logger, get_performance_logger
-from utils.database import get_database
-from utils.data_utils import DataProcessor, DataSaver, DataBalancer
+from src.utils.config import get_config
+from src.utils.logger import setup_logger, get_performance_logger
+from src.utils.database import get_database
+from src.utils.data_utils import DataProcessor, DataSaver, DataBalancer
 # from utils.data_labeler import DataLabeler  # Temporarily disabled
-from utils.powerbi_exporter import PowerBIExporter
-from preprocessing.language_detector import LanguageDetector
+from src.utils.powerbi_exporter import PowerBIExporter
+from src.preprocessing.language_detector import LanguageDetector
 
 # Feature extraction
-from preprocessing.ast_parser import ASTFeatureExtractor
-from preprocessing.feature_extractor import StatisticalFeatureExtractor
-from preprocessing.embedding_generator import CodeEmbeddingGenerator, EmbeddingEnsemble
-from preprocessing.code_tokenizer import AdvancedCodeTokenizer
+from src.preprocessing.ast_parser import ASTFeatureExtractor
+from src.preprocessing.feature_extractor import StatisticalFeatureExtractor
+# from src.preprocessing.embedding_generator import CodeEmbeddingGenerator, EmbeddingEnsemble  # Disabled
+from src.preprocessing.code_tokenizer import AdvancedCodeTokenizer
 
 # Models
-from models.baseline_models import BaselineModelTrainer, AdvancedEnsemble
-from models.transformer_model import TransformerTrainer, MultiModelEnsemble
-from models.ensemble_model import AdvancedEnsembleDetector
+from src.models.baseline_models import BaselineModelTrainer, AdvancedEnsemble
+# from src.models.transformer_model import TransformerTrainer, MultiModelEnsemble  # Disabled
+from src.models.ensemble_model import AdvancedEnsembleDetector
 
 # Evaluation
-from evaluation.metrics import AdvancedMetrics
-from evaluation.cross_validation import AdvancedCrossValidator
-from evaluation.adversarial_testing import AdversarialTester
+from src.evaluation.metrics import AdvancedMetrics
+from src.evaluation.cross_validation import AdvancedCrossValidator
+from src.evaluation.adversarial_testing import AdversarialTester
 
 logger = setup_logger()
 perf_logger = get_performance_logger()
@@ -69,7 +72,8 @@ class AICodeDetectionPipeline:
         # Feature extractors
         self.ast_extractor = ASTFeatureExtractor()
         self.statistical_extractor = StatisticalFeatureExtractor()
-        self.embedding_generator = CodeEmbeddingGenerator(config.get_section('features'))
+        # self.embedding_generator = CodeEmbeddingGenerator(config.get_section('features'))  # Disabled to avoid network calls
+        self.embedding_generator = None
         self.tokenizer = AdvancedCodeTokenizer()
         
         # Models
@@ -91,35 +95,47 @@ class AICodeDetectionPipeline:
         self.training_results = {}
         self.evaluation_results = {}
     
-    def run_complete_pipeline(self):
+    def run_complete_pipeline(self, skip_data=False, skip_training=False, skip_evaluation=False, skip_adversarial=False):
         """Run the complete training and evaluation pipeline."""
         self.logger.info("Starting AI Code Detection Pipeline")
         start_time = time.time()
         
         try:
             # Step 1: Data Collection and Preparation
-            self.logger.info("Step 1: Data Collection and Preparation")
-            self._collect_and_prepare_data()
+            if not skip_data:
+                self.logger.info("Step 1: Data Collection and Preparation")
+                self._collect_and_prepare_data()
+            else:
+                self.logger.info("Step 1: Skipping data collection")
             
             # Step 2: Feature Engineering
             self.logger.info("Step 2: Feature Engineering")
             self._extract_features()
             
             # Step 3: Model Training
-            self.logger.info("Step 3: Model Training")
-            self._train_models()
+            if not skip_training:
+                self.logger.info("Step 3: Model Training")
+                self._train_models()
+            else:
+                self.logger.info("Step 3: Skipping model training")
             
             # Step 4: Model Evaluation
-            self.logger.info("Step 4: Model Evaluation")
-            self._evaluate_models()
+            if not skip_evaluation:
+                self.logger.info("Step 4: Model Evaluation")
+                self._evaluate_models()
+            else:
+                self.logger.info("Step 4: Skipping evaluation")
             
             # Step 5: Ensemble Creation
             self.logger.info("Step 5: Ensemble Creation")
             self._create_ensemble()
             
             # Step 6: Adversarial Testing
-            self.logger.info("Step 6: Adversarial Testing")
-            self._test_robustness()
+            if not skip_adversarial:
+                self.logger.info("Step 6: Adversarial Testing")
+                self._test_robustness()
+            else:
+                self.logger.info("Step 6: Skipping adversarial testing")
             
             # Step 7: Save Results
             self.logger.info("Step 7: Save Results")
@@ -136,19 +152,20 @@ class AICodeDetectionPipeline:
         """Collect and prepare training data."""
         self.logger.info("Creating synthetic training data")
         
-        # Generate synthetic code samples
-        human_code_samples = self._generate_human_code_samples(1000)
-        ai_code_samples = self._generate_ai_code_samples(1000)
+        # Generate synthetic code samples (more data + variety for better human vs AI detection)
+        human_code_samples = self._generate_human_code_samples(3000)
+        ai_code_samples = self._generate_ai_code_samples(3000)
         
         # Combine and label data
         all_samples = human_code_samples + ai_code_samples
         labels = [0] * len(human_code_samples) + [1] * len(ai_code_samples)
+        languages = ['python'] * len(all_samples)
         
         # Create DataFrame
         self.training_data = pd.DataFrame({
             'code': all_samples,
             'label': labels,
-            'language': ['python'] * len(all_samples)
+            'language': languages
         })
         
         # Balance dataset if needed
@@ -159,27 +176,46 @@ class AICodeDetectionPipeline:
         
         self.logger.info(f"Created dataset with {len(self.training_data)} samples")
         
-        # Save to database
-        for idx, row in self.training_data.iterrows():
-            self.db.save_code_sample(
-                code_hash=f"sample_{idx}",
-                code_sample=row['code'],
-                language=row['language'],
-                label=row['label'],
-                source='synthetic'
-            )
+        # Save to database (commented out to avoid connection issues)
+        # for idx, row in self.training_data.iterrows():
+        #     self.db.save_code_sample(
+        #         code_hash=f"sample_{idx}",
+        #         code_sample=row['code'],
+        #         language=row['language'],
+        #         label=row['label'],
+        #         source='synthetic'
+        #     )
     
     def _generate_human_code_samples(self, n_samples: int) -> List[str]:
-        """Generate synthetic human-like code samples."""
+        """Generate diverse human-like code: terse, varied style, short/medium/long."""
         samples = []
+        random.seed(42)
         
-        # Simple function templates
-        function_templates = [
+        # Short / one-liner style
+        short_human = [
+            "x = 1\nprint(x)",
+            "a = [1,2,3]\nprint(min(a))",
+            "def f(): return 42",
+            "for i in range(3): print(i*i)",
+            "s = 'hi'\nprint(s.upper())",
+            "nums = [32,54,67]\nsmallest = min(nums)\nprint(smallest)",
+            "if x > 0: print('ok')",
+            "def add(a,b): return a+b",
+            "lst = [1,2,3]\nprint(lst[-1])",
+            "d = {'a':1}\nprint(d.get('a',0))",
+            "r = sum([1,2,3])",
+            "def double(n):\n  return n*2",
+            "out = [x*2 for x in range(5)]",
+            "import sys\nprint(sys.version)",
+            "try:\n  x=1\nexcept: pass",
+        ]
+        # Medium – terse names, minimal comments
+        medium_human = [
             """
-def calculate_fibonacci(n):
+def fib(n):
     if n <= 1:
         return n
-    return calculate_fibonacci(n-1) + calculate_fibonacci(n-2)
+    return fib(n-1) + fib(n-2)
 """,
             """
 def bubble_sort(arr):
@@ -191,16 +227,13 @@ def bubble_sort(arr):
     return arr
 """,
             """
-def binary_search(arr, target):
-    left, right = 0, len(arr) - 1
-    while left <= right:
-        mid = (left + right) // 2
-        if arr[mid] == target:
-            return mid
-        elif arr[mid] < target:
-            left = mid + 1
-        else:
-            right = mid - 1
+def bsearch(arr, t):
+    lo, hi = 0, len(arr)-1
+    while lo <= hi:
+        mid = (lo+hi)//2
+        if arr[mid] == t: return mid
+        if arr[mid] < t: lo = mid+1
+        else: hi = mid-1
     return -1
 """,
             """
@@ -212,49 +245,105 @@ class Node:
 class LinkedList:
     def __init__(self):
         self.head = None
-    
     def append(self, data):
-        new_node = Node(data)
+        n = Node(data)
         if not self.head:
-            self.head = new_node
+            self.head = n
             return
-        current = self.head
-        while current.next:
-            current = current.next
-        current.next = new_node
+        cur = self.head
+        while cur.next:
+            cur = cur.next
+        cur.next = n
 """,
             """
 def is_prime(n):
-    if n < 2:
-        return False
-    for i in range(2, int(n**0.5) + 1):
-        if n % i == 0:
-            return False
+    if n < 2: return False
+    for i in range(2, int(n**0.5)+1):
+        if n % i == 0: return False
     return True
-"""
+""",
+            """
+def qsort(arr):
+    if len(arr) <= 1: return arr
+    p = arr[len(arr)//2]
+    L = [x for x in arr if x < p]
+    M = [x for x in arr if x == p]
+    R = [x for x in arr if x > p]
+    return qsort(L) + M + qsort(R)
+""",
+            """
+def count_words(s):
+    c = {}
+    for w in s.split():
+        c[w] = c.get(w,0) + 1
+    return c
+""",
+            """
+def greet(user):
+    return f"Hi, {user}"
+print(greet("you"))
+""",
         ]
+        # Longer – still human style (mixed indentation, fewer docstrings)
+        long_human = [
+            """
+def process_data(data):
+    out = []
+    for item in data:
+        if item and len(item) > 0:
+            out.append(item.strip())
+    return out
+
+def main():
+    d = ["a ", " b", "c"]
+    r = process_data(d)
+    print(r)
+main()
+""",
+            """
+class Stack:
+    def __init__(self):
+        self._d = []
+    def push(self, x):
+        self._d.append(x)
+    def pop(self):
+        return self._d.pop() if self._d else None
+    def __len__(self):
+        return len(self._d)
+""",
+        ]
+        all_human = short_human + medium_human + long_human
         
         for i in range(n_samples):
-            template = function_templates[i % len(function_templates)]
-            # Add some variation
-            if i % 3 == 0:
-                template = template.replace('def ', 'def my_')
-            elif i % 3 == 1:
-                template = template.replace('    ', '  ')
-            
-            samples.append(template.strip())
+            t = all_human[i % len(all_human)]
+            # Name variations only (avoid changing indentation to prevent syntax errors)
+            if i % 4 == 0 and 'def ' in t:
+                t = t.replace('def ', 'def _', 1)
+            samples.append(t.strip())
         
         return samples
     
     def _generate_ai_code_samples(self, n_samples: int) -> List[str]:
-        """Generate synthetic AI-like code samples."""
+        """Generate AI-like code: docstrings, verbose names, consistent style."""
         samples = []
+        random.seed(43)
         
-        # AI-like code patterns (more verbose, different style)
-        ai_templates = [
+        # Short but AI-style (verbose names / comments)
+        short_ai = [
+            "user_input_value = 1\nprint(user_input_value)",
+            "list_of_numbers = [1, 2, 3]\nprint(min(list_of_numbers))",
+            "def get_default_value():\n    return 42",
+            "for index in range(3):\n    print(index * index)",
+            "string_value = 'hello'\nprint(string_value.upper())",
+            "numbers_list = [32, 54, 67]\nminimum_value = min(numbers_list)\nprint(minimum_value)",
+            "if condition_value > 0:\n    print('success')",
+            "def add_two_numbers(first, second):\n    return first + second",
+        ]
+        # Medium – docstrings, descriptive names
+        medium_ai = [
             """
 def calculate_fibonacci_sequence(n):
-    # This function calculates the nth Fibonacci number
+    \"\"\"Calculate the nth Fibonacci number.\"\"\"
     if n <= 1:
         return n
     else:
@@ -262,6 +351,7 @@ def calculate_fibonacci_sequence(n):
 """,
             """
 def perform_bubble_sort_algorithm(input_array):
+    \"\"\"Sort the input array using bubble sort.\"\"\"
     array_length = len(input_array)
     for i in range(array_length):
         for j in range(0, array_length - i - 1):
@@ -271,6 +361,7 @@ def perform_bubble_sort_algorithm(input_array):
 """,
             """
 def execute_binary_search_algorithm(sorted_array, target_value):
+    \"\"\"Perform binary search on sorted array.\"\"\"
     left_index = 0
     right_index = len(sorted_array) - 1
     while left_index <= right_index:
@@ -285,11 +376,13 @@ def execute_binary_search_algorithm(sorted_array, target_value):
 """,
             """
 class DataNode:
+    \"\"\"Node for linked list.\"\"\"
     def __init__(self, data_value):
         self.data_value = data_value
         self.next_node = None
 
 class LinkedListDataStructure:
+    \"\"\"A linked list implementation.\"\"\"
     def __init__(self):
         self.head_node = None
     
@@ -305,24 +398,95 @@ class LinkedListDataStructure:
 """,
             """
 def check_if_number_is_prime(number):
+    \"\"\"Check whether the number is prime.\"\"\"
     if number < 2:
         return False
     for divisor in range(2, int(number**0.5) + 1):
         if number % divisor == 0:
             return False
     return True
-"""
+""",
+            """
+def quicksort_algorithm(input_list):
+    \"\"\"Sort list using quicksort.\"\"\"
+    if len(input_list) <= 1:
+        return input_list
+    pivot_element = input_list[len(input_list) // 2]
+    left_part = [x for x in input_list if x < pivot_element]
+    middle_part = [x for x in input_list if x == pivot_element]
+    right_part = [x for x in input_list if x > pivot_element]
+    return quicksort_algorithm(left_part) + middle_part + quicksort_algorithm(right_part)
+""",
+            """
+def count_word_frequencies(input_string):
+    \"\"\"Count frequency of each word in the string.\"\"\"
+    frequency_dictionary = {}
+    for word in input_string.split():
+        frequency_dictionary[word] = frequency_dictionary.get(word, 0) + 1
+    return frequency_dictionary
+""",
+            """
+def generate_greeting_message(username):
+    \"\"\"Generate a greeting for the user.\"\"\"
+    return f"Welcome, {username}."
+print(generate_greeting_message("Pythonista"))
+""",
         ]
+        # Longer – docstrings, type-hint style, consistent formatting
+        long_ai = [
+            """
+def process_input_data(data_list):
+    \"\"\"
+    Process the input data list and return cleaned items.
+    \"\"\"
+    result_list = []
+    for item in data_list:
+        if item is not None and len(item) > 0:
+            result_list.append(item.strip())
+    return result_list
+
+def main_execution():
+    sample_data = ["a ", " b", "c"]
+    processed_result = process_input_data(sample_data)
+    print(processed_result)
+
+main_execution()
+""",
+            """
+class StackDataStructure:
+    \"\"\"A stack implementation using a list.\"\"\"
+    def __init__(self):
+        self._internal_list = []
+    
+    def push_element(self, element):
+        self._internal_list.append(element)
+    
+    def pop_element(self):
+        return self._internal_list.pop() if self._internal_list else None
+    
+    def __len__(self):
+        return len(self._internal_list)
+""",
+            """
+def find_minimum_value_in_list(number_list):
+    \"\"\"Find and return the minimum value in the given list.\"\"\"
+    if not number_list:
+        return None
+    minimum_value = min(number_list)
+    return minimum_value
+
+numbers = [32, 54, 67, 21, -5]
+smallest_value = find_minimum_value_in_list(numbers)
+print(smallest_value)
+""",
+        ]
+        all_ai = short_ai + medium_ai + long_ai
         
         for i in range(n_samples):
-            template = ai_templates[i % len(ai_templates)]
-            # Add some variation
-            if i % 4 == 0:
-                template = template.replace('def ', 'def compute_')
-            elif i % 4 == 1:
-                template = template.replace('    ', '        ')
-            
-            samples.append(template.strip())
+            t = all_ai[i % len(all_ai)]
+            if i % 5 == 0 and 'def ' in t:
+                t = t.replace('def ', 'def compute_', 1)
+            samples.append(t.strip())
         
         return samples
     
@@ -369,6 +533,9 @@ def check_if_number_is_prime(number):
         features_df = pd.DataFrame(all_features)
         features_df = features_df.fillna(0)  # Fill NaN values
         
+        # Store canonical column order for inference (web app must use same order)
+        self.feature_columns = features_df.columns.tolist()
+        
         # Prepare features and labels
         self.features = features_df.values
         self.labels = self.training_data['label'].values
@@ -392,24 +559,24 @@ def check_if_number_is_prime(number):
         baseline_results = self.baseline_trainer.train_models(X_train, y_train, X_test, y_test)
         self.training_results['baseline'] = baseline_results
         
-        # Train transformer model
-        self.logger.info("Training transformer model")
-        try:
-            self.transformer_trainer = TransformerTrainer(config.get_section('models'))
-            
-            # Convert features back to text for transformer
-            # This is simplified - in practice, you'd use the original code samples
-            X_train_text = [f"Code sample {i}" for i in range(len(X_train))]
-            X_test_text = [f"Code sample {i}" for i in range(len(X_test))]
-            
-            transformer_results = self.transformer_trainer.train(
-                X_train_text, y_train, X_test_text, y_test
-            )
-            self.training_results['transformer'] = transformer_results
-            
-        except Exception as e:
-            self.logger.error(f"Transformer training failed: {e}")
-            self.training_results['transformer'] = {'error': str(e)}
+        # Train transformer model (disabled)
+        self.logger.info("Skipping transformer model training")
+        # try:
+        #     self.transformer_trainer = TransformerTrainer(config.get_section('models'))
+        #     
+        #     # Convert features back to text for transformer
+        #     # This is simplified - in practice, you'd use the original code samples
+        #     X_train_text = [f"Code sample {i}" for i in range(len(X_train))]
+        #     X_test_text = [f"Code sample {i}" for i in range(len(X_test))]
+        #     
+        #     transformer_results = self.transformer_trainer.train(
+        #         X_train_text, y_train, X_test_text, y_test
+        #     )
+        #     self.training_results['transformer'] = transformer_results
+        #     
+        # except Exception as e:
+        #     self.logger.error(f"Transformer training failed: {e}")
+        #     self.training_results['transformer'] = {'error': str(e)}
     
     def _evaluate_models(self):
         """Evaluate all trained models."""
@@ -507,6 +674,14 @@ def check_if_number_is_prime(number):
         
         # Save baseline models
         self.baseline_trainer.save_models('models/baseline')
+        
+        # Save canonical feature column list so web app aligns features to training layout
+        if getattr(self, 'feature_columns', None):
+            models_dir = Path('models')
+            models_dir.mkdir(parents=True, exist_ok=True)
+            with open(models_dir / 'feature_columns.json', 'w') as f:
+                json.dump(self.feature_columns, f, indent=2)
+            self.logger.info(f"Saved feature_columns.json ({len(self.feature_columns)} columns)")
         
         # Save transformer model
         if self.transformer_trainer:
@@ -630,7 +805,11 @@ def check_if_number_is_prime(number):
             self.logger.info(f"Dashboard files: {list(dashboard_files.keys())}")
             
         except Exception as e:
-            self.logger.error(f"Error exporting to Power BI: {e}")
+            import traceback
+            self.logger.error(f"Power BI export failed: {e}")
+            self.logger.error("Full traceback:\n%s", traceback.format_exc())
+            print(f"\n⚠️  Power BI export failed (training and models are still saved): {e}")
+            print("   Check logs for details. You can ignore this if you do not use Power BI.")
     
     def _prepare_predictions_data(self) -> List[Dict[str, Any]]:
         """Prepare prediction data for Power BI export."""
@@ -665,6 +844,7 @@ def main():
     parser.add_argument('--skip-data', action='store_true', help='Skip data collection step')
     parser.add_argument('--skip-training', action='store_true', help='Skip model training step')
     parser.add_argument('--skip-evaluation', action='store_true', help='Skip evaluation step')
+    parser.add_argument('--skip-adversarial', action='store_true', help='Skip adversarial robustness testing (faster run)')
     
     args = parser.parse_args()
     
@@ -673,7 +853,12 @@ def main():
     
     try:
         # Run pipeline
-        pipeline.run_complete_pipeline()
+        pipeline.run_complete_pipeline(
+            skip_data=args.skip_data,
+            skip_training=args.skip_training,
+            skip_evaluation=args.skip_evaluation,
+            skip_adversarial=args.skip_adversarial,
+        )
         
         logger.info("Pipeline completed successfully!")
         print("✅ AI Code Detection System training completed successfully!")

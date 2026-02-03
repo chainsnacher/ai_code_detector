@@ -7,9 +7,10 @@ import pandas as pd
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 from datetime import datetime
 import hashlib
+import numpy as np
 
 logger = logging.getLogger("ai_code_detector")
 
@@ -83,13 +84,23 @@ class PowerBIExporter:
         df_data = []
         
         for model_name, metrics in performance_data.items():
+            if not isinstance(metrics, dict):
+                continue
+            # Support both top-level metrics and nested classification_report
+            weighted = metrics.get('classification_report', {}).get('weighted avg', {}) if isinstance(metrics.get('classification_report'), dict) else {}
+            def _float(v):
+                if v is None:
+                    return 0.0
+                if isinstance(v, (np.floating, np.integer)):
+                    return float(v)
+                return float(v) if isinstance(v, (int, float)) else 0.0
             df_data.append({
                 'model_name': model_name,
-                'accuracy': metrics.get('accuracy', 0.0),
-                'f1_score': metrics.get('f1_score', 0.0),
-                'precision': metrics.get('precision', 0.0),
-                'recall': metrics.get('recall', 0.0),
-                'roc_auc': metrics.get('roc_auc', 0.0),
+                'accuracy': _float(metrics.get('accuracy', 0.0)),
+                'f1_score': _float(metrics.get('f1_score') or weighted.get('f1-score', 0.0)),
+                'precision': _float(metrics.get('precision') or weighted.get('precision', 0.0)),
+                'recall': _float(metrics.get('recall') or weighted.get('recall', 0.0)),
+                'roc_auc': _float(metrics.get('roc_auc', 0.0)),
                 'timestamp': metrics.get('timestamp', datetime.now().isoformat())
             })
         
@@ -142,16 +153,24 @@ class PowerBIExporter:
         
         return str(output_path)
     
+    def _feature_importance_to_dict(self, features: Union[Dict[str, float], np.ndarray]) -> Dict[str, float]:
+        """Convert feature importance to a dict (handles numpy arrays from sklearn)."""
+        if isinstance(features, np.ndarray):
+            return {f"feature_{i}": float(x) for i, x in enumerate(features)}
+        if isinstance(features, dict):
+            return {k: float(v) if isinstance(v, (np.floating, np.integer)) else v for k, v in features.items()}
+        return {}
+    
     def export_feature_importance_for_powerbi(
         self,
-        feature_importance: Dict[str, Dict[str, float]],
+        feature_importance: Union[Dict[str, Dict[str, float]], Dict[str, np.ndarray]],
         output_file: str = "feature_importance.csv"
     ) -> str:
         """
         Export feature importance data for Power BI.
         
         Args:
-            feature_importance: Dictionary of model -> feature -> importance
+            feature_importance: Dictionary of model -> (feature dict or numpy array of importances)
             output_file: Output filename
             
         Returns:
@@ -160,7 +179,8 @@ class PowerBIExporter:
         df_data = []
         
         for model_name, features in feature_importance.items():
-            for feature_name, importance in features.items():
+            features_dict = self._feature_importance_to_dict(features)
+            for feature_name, importance in features_dict.items():
                 df_data.append({
                     'model_name': model_name,
                     'feature_name': feature_name,

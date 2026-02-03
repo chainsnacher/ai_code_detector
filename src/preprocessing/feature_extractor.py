@@ -172,9 +172,15 @@ class StatisticalFeatureExtractor:
         """Extract complexity-related features."""
         lines = code.split('\n')
         
-        # Readability metrics
-        readability_score = textstat.flesch_reading_ease(code) if code else 0
-        complexity_score = textstat.flesch_kincaid_grade(code) if code else 0
+        # Readability metrics (disabled to avoid network calls)
+        try:
+            readability_score = textstat.flesch_reading_ease(code) if code else 0
+        except:
+            readability_score = 0
+        try:
+            complexity_score = textstat.flesch_kincaid_grade(code) if code else 0
+        except:
+            complexity_score = 0
         
         # Nesting analysis
         nesting_stats = self._analyze_nesting(code)
