@@ -580,6 +580,122 @@ class AdvancedEnsembleDetector:
         
         return importance
     
+    def predict_with_individual_confidences(self, X: np.ndarray) -> Dict[str, Any]:
+        """
+        Make predictions and return individual confidence scores for each algorithm.
+        
+        Returns a dict with:
+        - 'final_prediction': overall prediction
+        - 'final_confidence': overall confidence
+        - 'individual_confidences': dict with confidence for each model
+        - 'algorithm_summary': human-readable summary of algorithm contributions
+        """
+        if not self.is_fitted:
+            raise ValueError("Ensemble not fitted yet")
+        
+        # Get base model predictions and probabilities
+        predictions = {}
+        probabilities = {}
+        individual_confidences = {}
+        algorithm_summary = {}
+        
+        for model_name, model in self.base_models.items():
+            try:
+                preds = model.predict(X)
+                probs = model.predict_proba(X) if hasattr(model, 'predict_proba') else None
+                
+                predictions[model_name] = preds
+                probabilities[model_name] = probs
+                
+                # Calculate individual confidence for this model
+                if probs is not None and len(probs.shape) == 2:
+                    # Clip probabilities to avoid 0% or 100% (e.g. logistic regression saturation)
+                    PROB_CLIP_LOW, PROB_CLIP_HIGH = 0.02, 0.98
+                    p0 = float(np.clip(probs[0][0], PROB_CLIP_LOW, PROB_CLIP_HIGH))
+                    p1 = float(np.clip(probs[0][1], PROB_CLIP_LOW, PROB_CLIP_HIGH)) if probs.shape[1] == 2 else (1.0 - p0)
+                    human_prob = p0
+                    ai_prob = p1
+                    # Renormalize so they sum to 1
+                    total = human_prob + ai_prob
+                    if total > 0:
+                        human_prob, ai_prob = human_prob / total, ai_prob / total
+                    confidence = max(human_prob, ai_prob)
+                    prediction = preds[0]
+                    prob_diff = abs(ai_prob - human_prob)
+                    combined_confidence = confidence * 0.7 + prob_diff * 0.3
+                    
+                    individual_confidences[model_name] = {
+                        'confidence': float(np.clip(combined_confidence, 0.0, 0.98)),
+                        'prediction': int(prediction),
+                        'max_probability': float(confidence),
+                        'ai_probability': float(ai_prob),
+                        'human_probability': float(human_prob),
+                        'probability_difference': float(prob_diff)
+                    }
+                else:
+                    # No probability output, use prediction directly
+                    individual_confidences[model_name] = {
+                        'confidence': 0.5,
+                        'prediction': int(preds[0]),
+                        'max_probability': 0.5,
+                        'ai_probability': 0.0,
+                        'human_probability': 0.0,
+                        'probability_difference': 0.0
+                    }
+                
+            except Exception as e:
+                logger.warning(f"Error getting predictions from {model_name}: {e}")
+                individual_confidences[model_name] = {
+                    'confidence': 0.0,
+                    'prediction': 0,
+                    'error': str(e)
+                }
+        
+        # Get final ensemble prediction
+        final_pred = self.predict(X)[0]
+        
+        # Calculate overall ensemble confidence
+        confidences = [ic['confidence'] for ic in individual_confidences.values() if 'error' not in ic]
+        avg_confidence = np.mean(confidences) if confidences else 0.5
+        
+        # Model agreement
+        predictions_list = [ic['prediction'] for ic in individual_confidences.values() if 'error' not in ic]
+        if predictions_list:
+            agreement = np.sum(np.array(predictions_list) == final_pred) / len(predictions_list)
+        else:
+            agreement = 0.0
+        
+        # Generate algorithm summary
+        for model_name, ic in individual_confidences.items():
+            if 'error' not in ic:
+                prediction_label = "AI Generated" if ic['prediction'] == 1 else "Human Written"
+                algorithm_summary[model_name] = {
+                    'prediction': prediction_label,
+                    'confidence': ic['confidence'],
+                    'certainty_level': self._get_certainty_level(ic['confidence'])
+                }
+        
+        return {
+            'final_prediction': int(final_pred),
+            'final_confidence': float(avg_confidence),
+            'model_agreement': float(agreement),
+            'individual_confidences': individual_confidences,
+            'algorithm_summary': algorithm_summary
+        }
+    
+    def _get_certainty_level(self, confidence: float) -> str:
+        """Convert confidence score to human-readable certainty level."""
+        if confidence >= 0.85:
+            return "Very High"
+        elif confidence >= 0.70:
+            return "High"
+        elif confidence >= 0.60:
+            return "Moderate"
+        elif confidence >= 0.50:
+            return "Low"
+        else:
+            return "Very Low"
+    
     def save_ensemble(self, save_path: str = "models/ensemble"):
         """Save the ensemble model."""
         save_path = Path(save_path)

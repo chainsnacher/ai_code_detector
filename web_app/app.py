@@ -14,8 +14,11 @@ import time
 import sys
 import os
 from pathlib import Path
+from typing import Any, Dict
 import base64
 import io
+import re
+import requests
 
 # Resolve project root and ensure absolute paths
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +63,7 @@ LanguageDetector = _dyn_import("preprocessing.language_detector", "LanguageDetec
 ASTFeatureExtractor = _dyn_import("preprocessing.ast_parser", "ASTFeatureExtractor")
 AdvancedCodeTokenizer = _dyn_import("preprocessing.code_tokenizer", "AdvancedCodeTokenizer")
 BaselineModelTrainer = _dyn_import("models.baseline_models", "BaselineModelTrainer")
+SurveyBotDetector = _dyn_import("survey.bot_detector", "SurveyBotDetector")
 
 # utils.data_utils exposes multiple attributes; import the module then pull names
 _data_utils_mod = _dyn_import("utils.data_utils")
@@ -78,65 +82,298 @@ def _simple_tokens(text: str):
         return []
 
 def _compute_heuristics(code: str) -> dict:
-    """Lightweight rules inspired by observed differences between AI vs human code.
+    """Improved heuristics with better AI vs human detection patterns.
     Returns a dict with ai_score, human_score, and evidence flags.
     """
     evidence = {}
     ai_score = 0.0
     human_score = 0.0
 
+    if not code or len(code.strip()) < 20:
+        return {'ai_score': 0.0, 'human_score': 0.0, 'evidence': {}}
+
+    # AI patterns: Verbose variable names, excessive type hints, docstrings
+    import re
+    
+    # Check for verbose/descriptive variable names (AI pattern)
+    verbose_patterns = re.findall(r'\b([a-z_]+_[a-z_]+_[a-z_]+)\b', code.lower())
+    if len(verbose_patterns) > 3:
+        ai_score += 0.55
+        evidence['verbose_names'] = True
+    elif len(verbose_patterns) > 1:
+        ai_score += 0.25
+        evidence['verbose_names'] = True
+    else:
+        evidence['verbose_names'] = False
+    
+    # Formal docstrings with Args/Returns (strong AI pattern)
+    if re.search(r'Args:\s*\n|Returns:\s*\n|Raises:\s*\n', code):
+        ai_score += 0.5
+        evidence['formal_docstring'] = True
+    else:
+        evidence['formal_docstring'] = False
+    
+    # Type hints everywhere (Python - AI pattern)
+    type_hints = len(re.findall(r':\s*(int|str|float|bool|List|Dict|Optional|Any)\s*[=)]', code))
+    total_functions = len(re.findall(r'\bdef\s+\w+', code))
+    if total_functions > 0 and type_hints / total_functions > 0.5:
+        ai_score += 0.5
+        evidence['excessive_type_hints'] = True
+    else:
+        evidence['excessive_type_hints'] = False
+    
+    # Excessive docstrings (AI pattern)
+    docstring_count = len(re.findall(r'""".*?"""', code, re.DOTALL)) + len(re.findall(r"'''.*?'''", code, re.DOTALL))
+    if docstring_count > 1:
+        ai_score += 0.35
+        evidence['excessive_docstrings'] = True
+    else:
+        evidence['excessive_docstrings'] = False
+
     # Token diversity vs repetition
     tokens = _simple_tokens(code)
     total_tokens = len(tokens)
-    unique_tokens = len(set(tokens)) or 1
-    diversity = unique_tokens / max(1, total_tokens)
-    evidence['token_diversity'] = diversity
-    if diversity < 0.35 and total_tokens > 30:
-        ai_score += 0.8
-        evidence['low_diversity'] = True
-    else:
-        evidence['low_diversity'] = False
+    if total_tokens > 0:
+        unique_tokens = len(set(tokens))
+        diversity = unique_tokens / total_tokens
+        evidence['token_diversity'] = diversity
+        # Very low diversity suggests AI-generated repetitive code
+        if diversity < 0.3 and total_tokens > 50:
+            ai_score += 0.7
+            evidence['low_diversity'] = True
+        elif diversity > 0.6:
+            human_score += 0.3
+            evidence['low_diversity'] = False
+        else:
+            evidence['low_diversity'] = False
 
     # Repetitive lines (templates/boilerplate)
-    lines = [ln.strip() for ln in (code or '').split('\n') if ln.strip()]
+    lines = [ln.strip() for ln in code.split('\n') if ln.strip()]
     if lines:
         from collections import Counter
         c = Counter(lines)
-        most_common_frac = c.most_common(1)[0][1] / max(1, len(lines))
+        most_common_frac = c.most_common(1)[0][1] / len(lines)
+        evidence['repetition_ratio'] = most_common_frac
+        if most_common_frac > 0.2 and len(lines) >= 10:
+            ai_score += 0.5
     else:
-        most_common_frac = 0.0
-    evidence['repetition_ratio'] = most_common_frac
-    if most_common_frac > 0.25 and len(lines) >= 8:
-        ai_score += 0.6
+        evidence['repetition_ratio'] = 0.0
 
-    # Security smells that AIs often replicate (hardcoded secrets)
-    try:
-        import re
-        secret_like = re.search(r"(password|passwd|secret|api[_-]?key|token)\s*[:=]", code, re.IGNORECASE) is not False and re.search(r"(password|passwd|secret|api[_-]?key|token)\s*[:=]", code, re.IGNORECASE) is not None
-    except Exception:
-        secret_like = False
-    evidence['hardcoded_secret'] = bool(secret_like)
-    if secret_like:
-        ai_score += 0.7
-
-    # Structural richness (often higher in human code on complex tasks)
-    rich_constructs = 0
-    for kw in ['class ', ' with ', ' try:', ' except ', ' finally:', ' async ', ' await ', '@', ' yield ']:
-        if kw in code:
-            rich_constructs += 1
-    evidence['rich_constructs'] = rich_constructs
-    if rich_constructs >= 2:
-        human_score += 0.7
-    elif rich_constructs >= 1:
+    # Human patterns: Short variable names, comments, debugging code
+    # Short variable names (human pattern)
+    short_vars = re.findall(r'\b([a-z]{1,3})\s*=', code)
+    if len(short_vars) > 3:
         human_score += 0.3
+        evidence['short_variables'] = True
+    else:
+        evidence['short_variables'] = False
+    
+    # Comments (human pattern - AIs often over-document)
+    comment_lines = len([l for l in code.split('\n') if l.strip().startswith('#')])
+    total_lines = len([l for l in code.split('\n') if l.strip()])
+    if total_lines > 0:
+        comment_ratio = comment_lines / total_lines
+        if 0.05 <= comment_ratio <= 0.15:  # Moderate comments
+            human_score += 0.2
+        elif comment_ratio > 0.25:  # Too many comments might be AI
+            ai_score += 0.2
+        evidence['comment_ratio'] = comment_ratio
+    
+    # Structural richness (often higher in human code)
+    rich_constructs = sum(1 for kw in ['class ', ' with ', ' try:', ' except ', ' finally:', ' async ', ' await ', '@', ' yield '] if kw in code)
+    evidence['rich_constructs'] = rich_constructs
+    if rich_constructs >= 3:
+        human_score += 0.5
+    elif rich_constructs >= 1:
+        human_score += 0.2
 
-    # Long, custom identifiers suggest human style
-    long_idents = [t for t in tokens if len(t) >= 15]
-    evidence['long_identifiers'] = len(long_idents)
-    if len(long_idents) >= 3:
-        human_score += 0.4
+    # Inconsistent formatting (human pattern)
+    indent_mixed = bool(re.search(r'^ {1,3}[^ ]', code, re.MULTILINE) and re.search(r'^\t', code, re.MULTILINE))
+    if indent_mixed:
+        human_score += 0.3
+        evidence['mixed_indentation'] = True
+    else:
+        evidence['mixed_indentation'] = False
 
-    return {'ai_score': ai_score, 'human_score': human_score, 'evidence': evidence}
+    return {'ai_score': min(ai_score, 2.0), 'human_score': min(human_score, 2.0), 'evidence': evidence}
+
+def _compute_ast_confidence(code: str, language: str = "python") -> dict:
+    """
+    Compute AST-based confidence for code analysis.
+    Returns confidence score based on structural and complexity features.
+    """
+    try:
+        ast_extractor = ASTFeatureExtractor()
+        features = ast_extractor.extract_features(code, language)
+        
+        if not features:
+            return {'confidence': 0.5, 'prediction': 0, 'reasoning': 'AST parsing failed'}
+        
+        # Calculate AST-based AI vs human likelihood
+        ai_score = 0.0
+        human_score = 0.0
+        
+        # 1. Code organization - well-organized code tends to be AI-generated
+        org_score = features.get('code_organization_score', 0.0)
+        if org_score > 0.7:
+            ai_score += 0.3
+        else:
+            human_score += 0.2
+        
+        # 2. Type hints - AI often uses more type hints
+        type_hint_ratio = features.get('type_hint_ratio', 0.0)
+        if type_hint_ratio > 0.5:
+            ai_score += 0.3
+        elif type_hint_ratio == 0:
+            human_score += 0.2
+        
+        # 3. Naming conventions - adherence to conventions
+        naming_score = features.get('variable_naming_score', 0.0)
+        if naming_score > 0.8:
+            ai_score += 0.2
+        elif naming_score < 0.5:
+            human_score += 0.2
+        
+        # 4. Exception handling - sophisticated exception handling
+        except_ratio = features.get('exception_handling_ratio', 0.0)
+        if except_ratio > 0.5:
+            ai_score += 0.2
+        
+        # 5. Docstring coverage - AI tends to have higher docstring ratio
+        docstring_ratio = features.get('docstring_ratio', 0.0)
+        if docstring_ratio > 0.3:
+            ai_score += 0.25
+        elif docstring_ratio < 0.1:
+            human_score += 0.2
+        
+        # 6. Code complexity - moderate complexity
+        complexity = features.get('cyclomatic_complexity', 1)
+        if 5 <= complexity <= 20:
+            ai_score += 0.15
+        elif complexity > 20:
+            human_score += 0.2
+        elif complexity < 2:
+            human_score += 0.1
+        
+        # 7. Function organization
+        func_count = features.get('function_count', 0)
+        class_count = features.get('class_count', 0)
+        if func_count > 0 and class_count > 0:
+            ai_score += 0.15
+        elif func_count == 0 and class_count == 0:
+            human_score += 0.1
+        
+        # Calculate confidence from scores
+        total_score = ai_score + human_score
+        if total_score == 0:
+            confidence = 0.5
+            prediction = 0
+        else:
+            ai_prob = ai_score / total_score
+            confidence = max(ai_prob, 1 - ai_prob)
+            prediction = 1 if ai_prob > 0.5 else 0
+        
+        # Ensure confidence is in valid range
+        confidence = max(0.5, min(0.95, confidence))
+        
+        return {
+            'confidence': float(confidence),
+            'prediction': int(prediction),
+            'ai_score': float(ai_score),
+            'human_score': float(human_score),
+            'features_used': {
+                'code_organization': float(org_score),
+                'type_hints': float(type_hint_ratio),
+                'naming_conventions': float(naming_score),
+                'docstring_coverage': float(docstring_ratio),
+                'complexity': int(complexity)
+            }
+        }
+    except Exception as e:
+        logger.warning(f"Error computing AST confidence: {e}")
+        return {'confidence': 0.5, 'prediction': 0, 'reasoning': str(e)}
+
+def _validate_language_selection(code: str, user_selected_lang: str, lang_detector: Any) -> Dict[str, Any]:
+    """
+    Validate if the code matches the user-selected language.
+    
+    Returns:
+        Dict with:
+        - is_valid: bool - whether the language selection is valid
+        - message: str - validation message
+        - detected_lang: str - the detected language
+        - detected_confidence: float - confidence of detection
+        - language_scores: dict - scores for all languages
+    """
+    if not code or len(code.strip()) < 20:
+        return {
+            'is_valid': True,
+            'message': 'Code too short for reliable language detection',
+            'detected_lang': user_selected_lang,
+            'detected_confidence': 0.0,
+            'language_scores': {}
+        }
+    
+    # Get all language scores
+    lang_stats = lang_detector.get_language_statistics(code)
+    
+    # Get detected language
+    detected_lang, detected_conf = lang_detector.detect_language(code)
+    
+    # Find the language with the highest score
+    language_scores = {lang: stats.get('confidence', 0) for lang, stats in lang_stats.items()}
+    sorted_langs = sorted(language_scores.items(), key=lambda x: x[1], reverse=True)
+    
+    # Use the highest scoring language, not just the detected one
+    if sorted_langs and sorted_langs[0][1] > 0.1:
+        best_detected_lang = sorted_langs[0][0]
+        best_confidence = sorted_langs[0][1]
+    else:
+        best_detected_lang = detected_lang
+        best_confidence = detected_conf
+    
+    # Map language names for comparison
+    lang_mapping = {
+        'py': 'python', 'js': 'javascript', 'cpp': 'cpp', 'c++': 'cpp',
+        'cs': 'csharp', 'ts': 'javascript', 'tsx': 'javascript', 'jsx': 'javascript'
+    }
+    
+    user_lang_normalized = lang_mapping.get(user_selected_lang.lower(), user_selected_lang.lower())
+    detected_lang_normalized = lang_mapping.get(best_detected_lang.lower(), best_detected_lang.lower())
+    
+    # Check if user selection matches detected language
+    if detected_lang_normalized == user_lang_normalized:
+        return {
+            'is_valid': True,
+            'message': f'✓ Language validated: {detected_lang_normalized.title()} (Confidence: {best_confidence:.0%})',
+            'detected_lang': best_detected_lang,
+            'detected_confidence': best_confidence,
+            'language_scores': language_scores
+        }
+    
+    # Get top 3 detected languages
+    top_langs = [lang for lang, _ in sorted_langs[:3]]
+    
+    # If there's a clear mismatch in the top scores
+    if best_confidence > 0.08:  # More lenient threshold
+        return {
+            'is_valid': False,
+            'message': f"❌ Language mismatch detected! You selected '{user_selected_lang}' but the code appears to be '{best_detected_lang.upper()}' (Confidence: {best_confidence:.0%}). Please verify your language selection.",
+            'detected_lang': best_detected_lang,
+            'detected_confidence': best_confidence,
+            'language_scores': language_scores,
+            'error_type': 'mismatch'
+        }
+    
+    # If no strong detection
+    return {
+        'is_valid': False,
+        'message': f"⚠️ Could not reliably detect the programming language. You selected '{user_selected_lang}', but the code signature is unclear. Possible languages: {', '.join(top_langs)}. Please verify your selection.",
+        'detected_lang': best_detected_lang,
+        'detected_confidence': best_confidence,
+        'language_scores': language_scores,
+        'error_type': 'unclear'
+    }
 
 # Page configuration
 st.set_page_config(
@@ -254,7 +491,7 @@ def main():
         st.markdown("### Navigation")
         page = st.selectbox(
             "Choose a page:",
-            ["🏠 Home", "🔍 Single Code Analysis", "📊 Batch Processing", "📈 Model Insights", "⚙️ Settings"]
+            ["🏠 Home", "🔍 Single Code Analysis", "📊 Batch Processing", "🧾 Survey Integrity", "📈 Model Insights", "⚙️ Settings"]
         )
         
         st.markdown("---")
@@ -282,10 +519,152 @@ def main():
         show_single_analysis_page()
     elif page == "📊 Batch Processing":
         show_batch_processing_page()
+    elif page == "🧾 Survey Integrity":
+        show_survey_integrity_page()
     elif page == "📈 Model Insights":
         show_model_insights_page()
     elif page == "⚙️ Settings":
         show_settings_page()
+
+def show_survey_integrity_page():
+    """Detect bot-like / fake free-text survey responses (batch + single)."""
+    st.markdown("## Survey Integrity (Bot/Fake Response Detection)")
+    st.caption("Upload survey responses and get a risk score + explainable reasons per response.")
+
+    tab_batch, tab_single = st.tabs(["📄 Batch (CSV/XLSX)", "📝 Single response"])
+
+    with tab_batch:
+        uploaded = st.file_uploader(
+            "Upload a CSV or Excel file",
+            type=["csv", "xlsx", "xls"],
+            accept_multiple_files=False,
+        )
+
+        if uploaded is None:
+            st.info("Upload a file to begin. Your file should include a column containing the free-text response.")
+            return
+
+        try:
+            if uploaded.name.lower().endswith(".csv"):
+                df = pd.read_csv(uploaded)
+            else:
+                df = pd.read_excel(uploaded)
+        except Exception as e:
+            st.error(f"Could not read file: {e}")
+            return
+
+        if df.empty:
+            st.warning("The uploaded file has no rows.")
+            return
+
+        cols = list(df.columns)
+        default_col = cols[0] if cols else None
+        text_col = st.selectbox("Select the response text column", options=cols, index=0 if default_col else 0)
+
+        col1, col2, col3 = st.columns([1, 1, 2])
+        with col1:
+            risk_threshold = st.slider("Flag threshold", min_value=0.0, max_value=1.0, value=0.65, step=0.05)
+        with col2:
+            max_rows = st.number_input("Max rows to analyze", min_value=50, max_value=20000, value=min(int(len(df)), 5000), step=50)
+        with col3:
+            st.caption("Tip: very large files are supported, but similarity checks get slower as rows grow.")
+
+        run = st.button("🧾 Run integrity check", type="primary")
+        if not run:
+            with st.expander("Preview uploaded data"):
+                st.dataframe(df.head(25), use_container_width=True)
+            return
+
+        detector = SurveyBotDetector()
+
+        work_df = df.copy()
+        if len(work_df) > int(max_rows):
+            work_df = work_df.head(int(max_rows)).copy()
+
+        with st.spinner("Scoring responses..."):
+            scored_df, report = detector.analyze_dataframe(work_df, text_col=text_col, risk_threshold=float(risk_threshold))
+
+        st.markdown("### Summary")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total analyzed", int(report.get("total", 0)))
+        c2.metric("Flagged", int(report.get("flagged", 0)))
+        c3.metric("Flag rate", f"{float(report.get('flag_rate', 0.0)):.1%}")
+        c4.metric("Duplicates (exact)", int(report.get("exact_duplicate_rows", 0)))
+
+        st.markdown("### Risk distribution")
+        try:
+            fig = px.histogram(scored_df, x="risk_score", nbins=25, title="Risk score histogram")
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception:
+            pass
+
+        st.markdown("### Top reasons")
+        reasons = report.get("top_reasons", [])
+        if reasons:
+            try:
+                reasons_df = pd.DataFrame(reasons, columns=["reason", "count"])
+                fig = px.bar(reasons_df, x="count", y="reason", orientation="h", title="Most common flags")
+                fig.update_layout(height=450)
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception:
+                st.dataframe(pd.DataFrame(reasons, columns=["reason", "count"]), use_container_width=True, hide_index=True)
+        else:
+            st.caption("No reasons recorded (nothing was flagged).")
+
+        st.markdown("### Results")
+        flagged_only = st.checkbox("Show only flagged", value=True)
+        view_df = scored_df[scored_df["flagged"] == True] if flagged_only else scored_df
+        st.dataframe(view_df.head(500), use_container_width=True)
+
+        def _df_to_bytes_csv(d: pd.DataFrame) -> bytes:
+            return d.to_csv(index=False).encode("utf-8")
+
+        cleaned_df = scored_df[scored_df["flagged"] == False].copy()
+        flagged_df = scored_df[scored_df["flagged"] == True].copy()
+
+        dl1, dl2, dl3 = st.columns(3)
+        with dl1:
+            st.download_button(
+                "📥 Download cleaned CSV",
+                data=_df_to_bytes_csv(cleaned_df),
+                file_name="survey_cleaned.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with dl2:
+            st.download_button(
+                "📥 Download flagged CSV",
+                data=_df_to_bytes_csv(flagged_df),
+                file_name="survey_flagged.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with dl3:
+            st.download_button(
+                "📥 Download scored CSV (full)",
+                data=_df_to_bytes_csv(scored_df),
+                file_name="survey_scored.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+    with tab_single:
+        txt = st.text_area("Paste one survey response", height=160, placeholder="Type or paste the response text here...")
+        risk_threshold = st.slider("Flag threshold (single)", min_value=0.0, max_value=1.0, value=0.65, step=0.05, key="single_thresh")
+        if st.button("Check response"):
+            detector = SurveyBotDetector()
+            out = detector.score_text(txt or "", risk_threshold=float(risk_threshold))
+            st.markdown("### Result")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Flagged", "Yes" if out.get("flagged") else "No")
+            c2.metric("Risk score", f"{float(out.get('risk_score', 0.0)):.2f}")
+            c3.metric("Label", str(out.get("label", "—")))
+            rs = out.get("reasons") or []
+            if rs:
+                st.markdown("**Reasons**")
+                st.write(rs)
+            with st.expander("Metrics"):
+                st.json(out.get("metrics", {}))
 
 def show_home_page():
     """Display the home page."""
@@ -400,10 +779,248 @@ def show_single_analysis_page():
     
     elif input_method == "🔗 GitHub URL":
         st.markdown("### GitHub Repository")
-        github_url = st.text_input("Enter GitHub URL:")
-        if github_url:
-            # In practice, you would implement GitHub API integration
-            st.info("GitHub integration coming soon!")
+        st.caption("Paste a GitHub **file URL** (recommended) or browse a repo path.")
+
+        def _github_token() -> str | None:
+            # Streamlit secrets (preferred) or env var
+            try:
+                tok = st.secrets.get("GITHUB_TOKEN")  # type: ignore[attr-defined]
+                if tok:
+                    return str(tok)
+            except Exception:
+                pass
+            tok = os.environ.get("GITHUB_TOKEN")
+            return tok or None
+
+        def _github_headers() -> dict:
+            h = {"Accept": "application/vnd.github+json"}
+            tok = _github_token()
+            if tok:
+                h["Authorization"] = f"Bearer {tok}"
+            return h
+
+        def _raw_from_blob_url(url: str) -> str | None:
+            # https://github.com/{owner}/{repo}/blob/{ref}/{path} -> https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}
+            m = re.match(r"^https?://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.*)$", url.strip())
+            if not m:
+                return None
+            owner, repo, ref, path = m.group(1), m.group(2), m.group(3), m.group(4)
+            return f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
+
+        def _fetch_text(url: str) -> str:
+            r = requests.get(url, headers=_github_headers(), timeout=20)
+            if r.status_code >= 400:
+                raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+            return r.text
+
+        def _repo_from_url(url: str) -> tuple[str, str] | None:
+            # https://github.com/{owner}/{repo}[...]
+            m = re.match(r"^https?://github\.com/([^/]+)/([^/]+)(?:/.*)?$", url.strip())
+            if not m:
+                return None
+            return m.group(1), m.group(2).replace(".git", "")
+
+        mode = st.radio("GitHub mode", ["File URL", "Repo browser (simple)", "Repo scan (recursive)"], horizontal=True)
+
+        if mode == "File URL":
+            github_url = st.text_input("GitHub file URL (e.g. https://github.com/user/repo/blob/main/path/file.py)")
+            if github_url:
+                raw_url = _raw_from_blob_url(github_url) or github_url
+                if "raw.githubusercontent.com" not in raw_url and "github.com" in raw_url:
+                    st.warning("Please paste a GitHub *file* URL (contains `/blob/`) or a raw URL.")
+                else:
+                    if st.button("Fetch file", type="primary"):
+                        try:
+                            code_input = _fetch_text(raw_url)
+                            # Infer language from extension if possible
+                            ext = (raw_url.split("?")[0].split(".")[-1] if "." in raw_url.split("/")[-1] else "").lower()
+                            ext_map = {"py": "python", "js": "javascript", "ts": "javascript", "tsx": "javascript", "jsx": "javascript", "java": "java", "cpp": "cpp", "cxx": "cpp", "cc": "cpp", "cs": "csharp", "go": "go", "rs": "rust"}
+                            language = ext_map.get(ext, "python")
+                            st.success("Fetched file successfully.")
+                            st.code(code_input[:4000] + ("\n...\n" if len(code_input) > 4000 else ""))
+                        except Exception as e:
+                            st.error(f"Failed to fetch file: {e}")
+
+        else:
+            repo_url = st.text_input("GitHub repo URL (e.g. https://github.com/user/repo)")
+            ref = st.text_input("Branch/tag/commit (ref)", value="main")
+            path = st.text_input("Path inside repo (optional)", value="")
+
+            if repo_url:
+                repo = _repo_from_url(repo_url)
+                if not repo:
+                    st.warning("Invalid repo URL.")
+                else:
+                    owner, repo_name = repo
+                    if st.button("List files", type="primary"):
+                        try:
+                            api_url = f"https://api.github.com/repos/{owner}/{repo_name}/contents/{path.lstrip('/')}"
+                            r = requests.get(api_url, headers=_github_headers(), params={"ref": ref}, timeout=20)
+                            if r.status_code >= 400:
+                                raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+                            items = r.json()
+                            if isinstance(items, dict) and items.get("type") == "file":
+                                items = [items]
+                            if not isinstance(items, list):
+                                raise RuntimeError("Unexpected GitHub API response.")
+
+                            files = [it for it in items if isinstance(it, dict) and it.get("type") == "file"]
+                            if not files:
+                                st.info("No files found at this path (or it contains only folders).")
+                            else:
+                                options = [f"{f.get('name')} ({f.get('path')})" for f in files]
+                                pick = st.selectbox("Pick a file to fetch", options=options)
+                                idx = options.index(pick)
+                                chosen = files[idx]
+                                raw_url = chosen.get("download_url")
+                                if not raw_url:
+                                    # Fallback: construct raw URL
+                                    raw_url = f"https://raw.githubusercontent.com/{owner}/{repo_name}/{ref}/{chosen.get('path')}"
+                                if st.button("Fetch selected file"):
+                                    code_input = _fetch_text(raw_url)
+                                    ext = (str(chosen.get("name", "")).split(".")[-1] if "." in str(chosen.get("name", "")) else "").lower()
+                                    ext_map = {"py": "python", "js": "javascript", "ts": "javascript", "tsx": "javascript", "jsx": "javascript", "java": "java", "cpp": "cpp", "cxx": "cpp", "cc": "cpp", "cs": "csharp", "go": "go", "rs": "rust"}
+                                    language = ext_map.get(ext, "python")
+                                    st.success("Fetched file successfully.")
+                                    st.code(code_input[:4000] + ("\n...\n" if len(code_input) > 4000 else ""))
+                        except Exception as e:
+                            st.error(f"Failed to list/fetch repo contents: {e}")
+        if mode == "Repo scan (recursive)":
+            repo_url = st.text_input("GitHub repo URL (e.g. https://github.com/user/repo)", key="scan_repo_url")
+            ref = st.text_input("Branch/tag/commit (ref)", value="main", key="scan_ref")
+            path_prefix = st.text_input("Only scan under this path (optional)", value="", key="scan_prefix")
+
+            ext_map = {"py": "python", "js": "javascript", "ts": "javascript", "tsx": "javascript", "jsx": "javascript", "java": "java", "cpp": "cpp", "cxx": "cpp", "cc": "cpp", "cs": "csharp", "go": "go", "rs": "rust"}
+            supported_exts = list(ext_map.keys())
+            default_exts = ["py", "js", "ts", "java", "cpp", "cs", "go", "rs"]
+            exts = st.multiselect("File extensions to include", options=supported_exts, default=default_exts)
+
+            colA, colB, colC = st.columns(3)
+            with colA:
+                max_files = st.number_input("Max files", min_value=10, max_value=2000, value=200, step=10)
+            with colB:
+                max_file_chars = st.number_input("Max chars per file", min_value=2000, max_value=200000, value=20000, step=2000)
+            with colC:
+                stop_on_errors = st.checkbox("Stop on errors", value=False)
+
+            if repo_url:
+                repo = _repo_from_url(repo_url)
+                if not repo:
+                    st.warning("Invalid repo URL.")
+                else:
+                    owner, repo_name = repo
+
+                    def _github_json(url: str, params: dict | None = None) -> Any:
+                        r = requests.get(url, headers=_github_headers(), params=params or {}, timeout=25)
+                        if r.status_code >= 400:
+                            raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+                        return r.json()
+
+                    def _get_tree_recursive() -> list[dict]:
+                        # Try using ref directly as tree identifier (often works)
+                        try:
+                            data = _github_json(f"https://api.github.com/repos/{owner}/{repo_name}/git/trees/{ref}", params={"recursive": "1"})
+                            if isinstance(data, dict) and isinstance(data.get("tree"), list):
+                                return data["tree"]
+                        except Exception:
+                            pass
+                        # Fallback: resolve ref -> sha
+                        ref_data = _github_json(f"https://api.github.com/repos/{owner}/{repo_name}/git/ref/heads/{ref}")
+                        sha = ref_data.get("object", {}).get("sha")
+                        if not sha:
+                            raise RuntimeError("Could not resolve ref to sha.")
+                        data = _github_json(f"https://api.github.com/repos/{owner}/{repo_name}/git/trees/{sha}", params={"recursive": "1"})
+                        if not isinstance(data, dict) or not isinstance(data.get("tree"), list):
+                            raise RuntimeError("Unexpected tree response.")
+                        return data["tree"]
+
+                    if st.button("Scan repo", type="primary"):
+                        if not load_models():
+                            st.error("Models not available.")
+                            return
+
+                        try:
+                            tree = _get_tree_recursive()
+                        except Exception as e:
+                            st.error(f"Failed to fetch repo tree: {e}")
+                            return
+
+                        prefix = (path_prefix or "").lstrip("/")
+                        files = []
+                        for it in tree:
+                            if not isinstance(it, dict):
+                                continue
+                            if it.get("type") != "blob":
+                                continue
+                            p = str(it.get("path", ""))
+                            if prefix and not p.startswith(prefix):
+                                continue
+                            # Skip common vendor/build dirs
+                            if any(seg in p.split("/") for seg in ["node_modules", "dist", "build", ".git", ".venv", "venv", "__pycache__"]):
+                                continue
+                            name = p.split("/")[-1]
+                            if "." not in name:
+                                continue
+                            ext = name.split(".")[-1].lower()
+                            if ext not in set(exts):
+                                continue
+                            files.append(p)
+
+                        if not files:
+                            st.info("No matching files found to scan.")
+                            return
+
+                        files = files[: int(max_files)]
+
+                        prog = st.progress(0)
+                        status = st.empty()
+                        rows = []
+
+                        for i, p in enumerate(files, start=1):
+                            status.text(f"Scanning {i}/{len(files)}: {p}")
+                            raw_url = f"https://raw.githubusercontent.com/{owner}/{repo_name}/{ref}/{p}"
+                            try:
+                                text = _fetch_text(raw_url)
+                                if len(text) > int(max_file_chars):
+                                    text = text[: int(max_file_chars)]
+                                ext = p.split(".")[-1].lower()
+                                lang = ext_map.get(ext, "python")
+                                res, _clean = analyze_code_core(text, lang)
+                                rows.append({
+                                    "path": p,
+                                    "language": lang,
+                                    "prediction": "AI" if int(res.get("prediction", 0)) == 1 else "Human",
+                                    "confidence": float(res.get("confidence", 0.0)),
+                                })
+                            except Exception as e:
+                                rows.append({"path": p, "language": "", "prediction": "Error", "confidence": 0.0, "error": str(e)})
+                                if stop_on_errors:
+                                    break
+                            prog.progress(i / len(files))
+
+                        status.text("Scan complete.")
+                        result_df = pd.DataFrame(rows)
+                        if not result_df.empty:
+                            c1, c2, c3 = st.columns(3)
+                            c1.metric("Files scanned", int(len(result_df)))
+                            c2.metric("AI", int((result_df["prediction"] == "AI").sum()))
+                            c3.metric("Human", int((result_df["prediction"] == "Human").sum()))
+
+                            st.dataframe(result_df.sort_values(["prediction", "confidence"], ascending=[True, False]), use_container_width=True)
+
+                            try:
+                                fig = px.histogram(result_df[result_df["prediction"].isin(["AI", "Human"])], x="confidence", color="prediction", nbins=20, title="Confidence distribution")
+                                st.plotly_chart(fig, use_container_width=True)
+                            except Exception:
+                                pass
+
+                            st.download_button(
+                                "📥 Download repo scan CSV",
+                                data=result_df.to_csv(index=False).encode("utf-8"),
+                                file_name="github_repo_scan.csv",
+                                mime="text/csv",
+                                use_container_width=True,
+                            )
     
     # Analysis button
     if st.button("🔍 Analyze Code", type="primary"):
@@ -441,8 +1058,373 @@ def _fallback_analysis_result(clean: str, reason: str, prediction: int = 0, conf
         'heuristics': heur,
         'debug_models': [],
         'features_df': None,
-        'feature_count': 0
+        'feature_count': 0,
+        'individual_confidences': {},
+        'algorithm_summary': {},
+        'language_detected': 'python',
+        'language_selected': 'python'
     }
+
+def analyze_code_core(code: str, language: str) -> tuple[dict, str]:
+    """
+    Core analysis routine that returns (results, clean_code).
+
+    This is used by:
+    - Single analysis UI (renders charts)
+    - GitHub repo recursive scan (table output)
+    """
+    # 1) Clean and validate (all steps safe)
+    try:
+        clean = CodePreprocessor.clean_code(code) if code else ""
+    except Exception:
+        clean = (code or "").strip()
+    clean = clean or ""
+    try:
+        num_chars = len(clean)
+        num_lines = clean.count('\n') + 1
+    except Exception:
+        num_chars, num_lines = 0, 0
+    try:
+        if len(clean) > 20000:
+            clean = clean[:20000]
+    except Exception:
+        pass
+
+    try:
+        lang_detector = LanguageDetector()
+        detected_lang, lang_conf = lang_detector.detect_language(clean)
+        language_final = detected_lang if lang_conf >= 0.6 else (language or 'python')
+    except Exception:
+        language_final = language or 'python'
+
+    # For core analysis we do NOT hard-fail on language mismatch.
+    try:
+        val = DataValidator.validate_code_sample(clean, language=language_final)
+        if not val.get('is_valid', True):
+            pass
+    except Exception:
+        pass
+
+    MIN_CHARS, MIN_LINES = 40, 3
+    if num_chars < MIN_CHARS or num_lines < MIN_LINES:
+        heur = _compute_heuristics(clean)
+        ai_bias = heur['ai_score'] - heur['human_score']
+        pred = 1 if ai_bias > 0.3 else 0
+        conf = 0.35 + min(0.2, abs(ai_bias) * 0.3)
+        results = _fallback_analysis_result(
+            clean,
+            f"Input very short (chars={num_chars}, lines={num_lines}). Using heuristics-based detection. Add more code for better accuracy.",
+            prediction=pred, confidence=conf
+        )
+        results["language_detected"] = language_final
+        results["language_selected"] = language
+        return results, clean
+
+    # 2) Extract features (each extractor wrapped)
+    features_dict: dict = {}
+    try:
+        ast_extractor = ASTFeatureExtractor()
+        ast_features = ast_extractor.extract_features(clean, language_final)
+        if ast_features:
+            features_dict.update(ast_features)
+    except Exception:
+        pass
+    try:
+        extractor = StatisticalFeatureExtractor()
+        stat_features = extractor.extract_features(clean, language=language_final)
+        if stat_features:
+            features_dict.update(stat_features)
+    except Exception:
+        pass
+    try:
+        tokenizer = AdvancedCodeTokenizer()
+        token_features = tokenizer.get_code_metrics(clean, language_final)
+        if token_features:
+            features_dict.update(token_features)
+    except Exception:
+        pass
+    if not features_dict:
+        features_dict = {'total_lines': num_lines, 'total_characters': num_chars}
+
+    features_df = pd.DataFrame([features_dict])
+    features_df = features_df.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    # 3) Load canonical columns and align
+    canonical_cols = None
+    feature_columns_path = (ROOT / 'models' / 'feature_columns.json').resolve()
+    try:
+        if feature_columns_path.exists():
+            with open(feature_columns_path, 'r') as f:
+                canonical_cols = json.load(f)
+        if not canonical_cols:
+            canonical_cols = pd.read_csv(str(ROOT / 'data' / 'processed' / 'features.csv'), nrows=0).columns.tolist()
+    except Exception:
+        pass
+    if not canonical_cols:
+        canonical_cols = list(features_df.columns)
+
+    # Expand single vector column if needed
+    try:
+        if features_df.shape[1] == 1:
+            first_val = features_df.iloc[0, 0]
+            if isinstance(first_val, (list, tuple, np.ndarray)):
+                vec = np.asarray(first_val).ravel()
+                if canonical_cols and len(canonical_cols) == vec.shape[0]:
+                    features_df = pd.DataFrame([vec], columns=canonical_cols)
+                else:
+                    colnames = [f'f_{i}' for i in range(vec.shape[0])]
+                    features_df = pd.DataFrame([vec], columns=colnames)
+    except Exception:
+        pass
+
+    if canonical_cols:
+        features_df = features_df.reindex(columns=canonical_cols, fill_value=0)
+
+    X = features_df.values.astype(float)
+    X = np.nan_to_num(X, copy=False)
+
+    detector = st.session_state.detector
+    baseline_trainer = st.session_state.get('_baseline_trainer', None)
+
+    def _model_n_features(m):
+        try:
+            if hasattr(m, 'n_features_in_'):
+                return getattr(m, 'n_features_in_')
+            named = getattr(m, 'named_steps', None)
+            if isinstance(named, dict):
+                clf = named.get('classifier') or named.get('clf')
+                if clf is not None and hasattr(clf, 'n_features_in_'):
+                    return getattr(clf, 'n_features_in_')
+        except Exception:
+            return None
+        return None
+
+    # Align to expected feature count if possible
+    expected_n = None
+    for _name, _model in (detector.base_models.items() if detector else {}):
+        expected_n = _model_n_features(_model)
+        if expected_n is not None:
+            break
+    if expected_n is not None and X.shape[1] != expected_n:
+        n = X.shape[1]
+        if n > expected_n:
+            X = X[:, :expected_n]
+        else:
+            X = np.hstack([X, np.zeros((X.shape[0], expected_n - n))])
+        col_names = (canonical_cols[:expected_n] if canonical_cols and len(canonical_cols) >= expected_n else [f'f_{i}' for i in range(expected_n)])
+        features_df = pd.DataFrame(X, columns=col_names)
+
+    predictions = {}
+    probabilities = {}
+    debug_rows = []
+    for name, model in (detector.base_models or {}).items():
+        try:
+            expected = _model_n_features(model)
+            X_model = X
+            if expected is not None and X.shape[1] != expected:
+                if X.shape[1] > expected:
+                    X_model = X[:, :expected]
+                else:
+                    X_model = np.hstack([X, np.zeros((X.shape[0], expected - X.shape[1]))])
+            preds = model.predict(X_model)
+            predictions[name] = preds
+            probs = model.predict_proba(X_model) if hasattr(model, 'predict_proba') else None
+            probabilities[name] = probs
+            try:
+                prob_max = float(np.max(probs[0])) if probs is not None and probs.ndim == 2 else None
+            except Exception:
+                prob_max = None
+            debug_rows.append({
+                'model': name,
+                'expected_features': int(expected) if expected is not None else None,
+                'provided_features': int(X_model.shape[1]) if X_model is not None else None,
+                'pred': int(preds[0]) if preds is not None else None,
+                'max_prob': prob_max
+            })
+        except Exception:
+            continue
+
+    if not predictions:
+        heur = _compute_heuristics(clean)
+        ai_bias = heur['ai_score'] - heur['human_score']
+        pred = 1 if ai_bias > 0.2 else 0
+        conf = 0.5 + min(0.3, abs(ai_bias))
+        results = _fallback_analysis_result(
+            clean,
+            "Models could not run on this input; result is based on code heuristics (style and structure).",
+            prediction=pred, confidence=conf
+        )
+        results["language_detected"] = language_final
+        results["language_selected"] = language
+        return results, clean
+
+    # Weighted probability-based approach (reuse the same logic as single analysis)
+    final_pred = 0
+    confidence = 0.5
+    weighted_ai_prob = 0.0
+    weighted_human_prob = 0.0
+    model_weights = {}
+
+    try:
+        pred_array = np.array([p[0] for p in predictions.values() if p is not None])
+        if len(pred_array) > 0:
+            agreement = float(np.sum(pred_array == np.bincount(pred_array).argmax()) / len(pred_array))
+        else:
+            agreement = 1.0
+
+        PROB_CLIP_LOW, PROB_CLIP_HIGH = 0.02, 0.98
+        clipped_probs = {}
+        for name, probs in probabilities.items():
+            if probs is not None and len(probs.shape) == 2 and probs.shape[1] >= 2:
+                h = float(np.clip(probs[0][0], PROB_CLIP_LOW, PROB_CLIP_HIGH))
+                a = float(np.clip(probs[0][1], PROB_CLIP_LOW, PROB_CLIP_HIGH))
+                tot = h + a
+                if tot > 0:
+                    h, a = h / tot, a / tot
+                clipped_probs[name] = (h, a)
+
+        for name, (h, a) in clipped_probs.items():
+            model_weights[name] = abs(a - h)
+        total_weight = sum(model_weights.values()) if model_weights else 1.0
+        if total_weight > 0:
+            model_weights = {k: v / total_weight for k, v in model_weights.items()}
+
+        max_ai_prob = 0.0
+        for name, (h, a) in clipped_probs.items():
+            weight = model_weights.get(name, 1.0 / max(1, len(clipped_probs)))
+            weighted_ai_prob += weight * a
+            weighted_human_prob += weight * h
+            max_ai_prob = max(max_ai_prob, a)
+
+        AI_THRESHOLD = 0.42
+        if weighted_ai_prob + weighted_human_prob > 0:
+            if weighted_ai_prob >= AI_THRESHOLD and weighted_ai_prob >= weighted_human_prob:
+                final_pred = 1
+            elif weighted_human_prob > 0.5:
+                final_pred = 0
+            else:
+                final_pred = 1 if weighted_ai_prob >= 0.40 else 0
+
+            winning_prob = max(weighted_ai_prob, weighted_human_prob)
+            prob_diff = abs(weighted_ai_prob - weighted_human_prob)
+            confidence = winning_prob * 0.7 + prob_diff * 0.3
+            confidence = max(0.55, min(0.95, confidence))
+            if final_pred == 0 and max_ai_prob >= 0.40:
+                confidence = min(confidence, 0.50)
+        else:
+            final_pred = int(np.bincount(pred_array).argmax()) if len(pred_array) > 0 else 0
+            confidence = 0.5 + (agreement * 0.3) if agreement > 0 else 0.6
+
+        if detector.meta_classifier is not None:
+            try:
+                meta_feats = detector.meta_feature_generator.generate_meta_features(predictions, probabilities)
+                meta_scaled = detector.scaler.transform(meta_feats)
+                if hasattr(detector.meta_classifier, 'predict_proba'):
+                    meta_prob = detector.meta_classifier.predict_proba(meta_scaled)
+                    if meta_prob.ndim == 2 and meta_prob.shape[1] == 2:
+                        meta_human_prob = float(np.clip(meta_prob[0][0], 0.02, 0.98))
+                        meta_ai_prob = float(np.clip(meta_prob[0][1], 0.02, 0.98))
+                        tot = meta_human_prob + meta_ai_prob
+                        if tot > 0:
+                            meta_human_prob, meta_ai_prob = meta_human_prob / tot, meta_ai_prob / tot
+                        meta_pred = 1 if meta_ai_prob > meta_human_prob else 0
+                        meta_winning_prob = max(meta_ai_prob, meta_human_prob)
+                        meta_prob_diff = abs(meta_ai_prob - meta_human_prob)
+                        meta_conf = max(0.55, min(0.95, meta_winning_prob * 0.7 + meta_prob_diff * 0.3))
+                        if meta_conf > confidence or (meta_pred == final_pred and meta_conf > 0.6):
+                            final_pred = meta_pred
+                            confidence = meta_conf
+            except Exception:
+                pass
+    except Exception:
+        agreement = 1.0
+
+    heur = _compute_heuristics(clean)
+    ai_bias = heur['ai_score'] - heur['human_score']
+    if ai_bias >= 0.5:
+        if final_pred == 0 and (weighted_ai_prob + weighted_human_prob) > 0 and weighted_ai_prob >= 0.28:
+            final_pred = 1
+            confidence = max(confidence, 0.65)
+        else:
+            final_pred = 1
+            confidence = max(confidence, 0.68)
+
+    if final_pred == 0 and (weighted_ai_prob + weighted_human_prob) > 0 and weighted_ai_prob >= 0.35:
+        confidence = min(confidence, 0.50)
+
+    # agreement
+    try:
+        pred_array2 = np.array(list(predictions.values()))
+        agreement = float(detector.meta_feature_generator._calculate_agreement_ratio(pred_array2)[0])
+    except Exception:
+        agreement = 1.0
+
+    # feature importance (best-effort)
+    feature_importance = {}
+    try:
+        if baseline_trainer and baseline_trainer.feature_importance:
+            model_importance = detector.get_model_importance()
+            combined = np.zeros(len(features_df.columns))
+            for mname, imp in baseline_trainer.feature_importance.items():
+                if imp is None or len(imp) == 0:
+                    continue
+                weight = model_importance.get(mname, 1.0 / max(1, len(baseline_trainer.feature_importance)))
+                arr = np.array(imp)
+                if arr.shape[0] < combined.shape[0]:
+                    arr = np.pad(arr, (0, combined.shape[0] - arr.shape[0]), 'constant')
+                elif arr.shape[0] > combined.shape[0]:
+                    arr = arr[:combined.shape[0]]
+                combined += weight * (np.nan_to_num(arr) * np.nan_to_num(np.abs(X[0])))
+            feat_names = list(features_df.columns)
+            scores = {n: float(v) for n, v in zip(feat_names, combined)}
+            feature_importance = dict(sorted(scores.items(), key=lambda x: x[1], reverse=True)[:15])
+    except Exception:
+        feature_importance = {}
+
+    try:
+        attention_weights = generate_attention_weights(code or clean)
+    except Exception:
+        attention_weights = [[0.0]]
+
+    try:
+        lang_stats = lang_detector.get_language_statistics(clean)  # type: ignore[name-defined]
+    except Exception:
+        lang_stats = {}
+
+    try:
+        explanation = generate_explanation_from_features(
+            code=clean,
+            language=language_final,
+            features_df=features_df,
+            predictions=predictions,
+            probabilities=probabilities,
+            confidence=confidence,
+            agreement=agreement,
+            language_stats=lang_stats
+        )
+    except Exception:
+        explanation = (
+            f"Prediction: {'AI Generated' if final_pred == 1 else 'Human Written'} "
+            f"(confidence {confidence:.0%}). Based on {len(predictions)} model(s) and code structure."
+        )
+
+    results = {
+        'prediction': int(final_pred),
+        'confidence': float(confidence),
+        'explanation': explanation,
+        'model_agreement': float(agreement),
+        'feature_importance': feature_importance,
+        'attention_weights': attention_weights,
+        'heuristics': heur,
+        'debug_models': debug_rows,
+        'features_df': features_df,
+        'feature_count': int(X.shape[1]),
+        'individual_confidences': {},
+        'algorithm_summary': {},
+        'language_detected': language_final,
+        'language_selected': language
+    }
+    return results, clean
 
 def analyze_single_code(code: str, language: str):
     """Analyze a single code sample. Never raises; always shows a result."""
@@ -452,323 +1434,7 @@ def analyze_single_code(code: str, language: str):
     results = None
     with st.spinner("Analyzing code..."):
         try:
-            # 1) Clean and validate (all steps safe)
-            try:
-                clean = CodePreprocessor.clean_code(code) if code else ""
-            except Exception:
-                clean = (code or "").strip()
-            clean = clean or ""
-            try:
-                num_chars = len(clean)
-                num_lines = clean.count('\n') + 1
-            except Exception:
-                num_chars, num_lines = 0, 0
-            try:
-                if len(clean) > 20000:
-                    clean = clean[:20000]
-            except Exception:
-                pass
-            try:
-                lang_detector = LanguageDetector()
-                detected_lang, lang_conf = lang_detector.detect_language(clean)
-                language_final = detected_lang if lang_conf >= 0.6 else (language or 'python')
-            except Exception:
-                language_final = language or 'python'
-            try:
-                val = DataValidator.validate_code_sample(clean, language=language_final)
-                if not val.get('is_valid', True):
-                    pass  # continue analysis anyway
-            except Exception:
-                pass
-
-            MIN_CHARS, MIN_LINES = 40, 3
-            if num_chars < MIN_CHARS or num_lines < MIN_LINES:
-                results = _fallback_analysis_result(
-                    clean,
-                    f"Input very short (chars={num_chars}, lines={num_lines}). Conservative Human-written label. Add more code for better detection.",
-                    prediction=0, confidence=0.25
-                )
-                st.session_state.analysis_results = results
-                display_analysis_results(results, clean)
-                return
-
-            # 2) Extract features (each extractor wrapped)
-            features_dict = {}
-            try:
-                ast_extractor = ASTFeatureExtractor()
-                ast_features = ast_extractor.extract_features(clean, language_final)
-                if ast_features:
-                    features_dict.update(ast_features)
-            except Exception:
-                pass
-            try:
-                extractor = StatisticalFeatureExtractor()
-                stat_features = extractor.extract_features(clean, language=language_final)
-                if stat_features:
-                    features_dict.update(stat_features)
-            except Exception:
-                pass
-            try:
-                tokenizer = AdvancedCodeTokenizer()
-                token_features = tokenizer.get_code_metrics(clean, language_final)
-                if token_features:
-                    features_dict.update(token_features)
-            except Exception:
-                pass
-            if not features_dict:
-                features_dict = {'total_lines': num_lines, 'total_characters': num_chars}
-            
-            features_df = pd.DataFrame([features_dict])
-            features_df = features_df.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-
-            # 3) Load canonical columns (prefer model-saved canonical list), then align features
-            canonical_cols = None
-            feature_columns_path = (ROOT / 'models' / 'feature_columns.json').resolve()
-            try:
-                if feature_columns_path.exists():
-                    with open(feature_columns_path, 'r') as f:
-                        canonical_cols = json.load(f)
-                if not canonical_cols:
-                    canonical_cols = pd.read_csv(str(ROOT / 'data' / 'processed' / 'features.csv'), nrows=0).columns.tolist()
-            except Exception:
-                pass
-            if not canonical_cols:
-                canonical_cols = list(features_df.columns)
-
-            # If extractor returned a single column containing an array-like feature vector, expand it
-            try:
-                if features_df.shape[1] == 1:
-                    first_val = features_df.iloc[0, 0]
-                    if isinstance(first_val, (list, tuple, np.ndarray)):
-                        vec = np.asarray(first_val).ravel()
-                        if canonical_cols and len(canonical_cols) == vec.shape[0]:
-                            features_df = pd.DataFrame([vec], columns=canonical_cols)
-                        else:
-                            colnames = [f'f_{i}' for i in range(vec.shape[0])]
-                            features_df = pd.DataFrame([vec], columns=colnames)
-            except Exception:
-                pass
-
-            # Reindex to canonical ordering (fill missing with 0) to match training-time layout
-            if canonical_cols:
-                features_df = features_df.reindex(columns=canonical_cols, fill_value=0)
-
-            X = features_df.values.astype(float)
-            X = np.nan_to_num(X, copy=False)
-
-            # Get expected feature count from the first loaded model and auto-align if needed (so small/any code works)
-            expected_n = None
-            # Robustly detect expected feature count from base models. Many
-            # models are wrapped in a scikit-learn Pipeline where the final
-            # estimator holds `n_features_in_` (e.g., pipeline.named_steps['classifier']).
-            def _model_n_features(m):
-                try:
-                    if hasattr(m, 'n_features_in_'):
-                        return getattr(m, 'n_features_in_')
-                    # Pipeline-style wrapper: check named_steps
-                    named = getattr(m, 'named_steps', None)
-                    if isinstance(named, dict):
-                        clf = named.get('classifier') or named.get('clf')
-                        if clf is not None and hasattr(clf, 'n_features_in_'):
-                            return getattr(clf, 'n_features_in_')
-                except Exception:
-                    return None
-                return None
-
-            for _name, _model in (st.session_state.detector.base_models.items() if st.session_state.detector else {}):
-                expected_n = _model_n_features(_model)
-                if expected_n is not None:
-                    break
-            if expected_n is not None and X.shape[1] != expected_n:
-                # Auto-align: trim or pad so analysis works for any code (including small snippets)
-                n = X.shape[1]
-                if n > expected_n:
-                    X = X[:, :expected_n]
-                else:
-                    X = np.hstack([X, np.zeros((X.shape[0], expected_n - n))])
-                col_names = (canonical_cols[:expected_n] if canonical_cols and len(canonical_cols) >= expected_n else [f'f_{i}' for i in range(expected_n)])
-                features_df = pd.DataFrame(X, columns=col_names)
-
-            # 4) Run baseline models (already attached to detector in load_models)
-            detector = st.session_state.detector
-            baseline_trainer = st.session_state.get('_baseline_trainer', None)
-
-            predictions = {}
-            probabilities = {}
-            debug_rows = []
-            for name, model in (detector.base_models or {}).items():
-                try:
-                    # Determine expected feature count for this specific model.
-                    expected = None
-                    try:
-                        expected = _model_n_features(model)
-                    except Exception:
-                        expected = getattr(model, 'n_features_in_', None)
-                    X_model = X
-                    if expected is not None and X.shape[1] != expected:
-                        if X.shape[1] > expected:
-                            X_model = X[:, :expected]
-                        else:
-                            X_model = np.hstack([X, np.zeros((X.shape[0], expected - X.shape[1]))])
-                    preds = model.predict(X_model)
-                    predictions[name] = preds
-                    probs = model.predict_proba(X_model) if hasattr(model, 'predict_proba') else None
-                    probabilities[name] = probs
-                    try:
-                        prob_max = float(np.max(probs[0])) if probs is not None and probs.ndim == 2 else None
-                    except Exception:
-                        prob_max = None
-                    debug_rows.append({
-                        'model': name,
-                        'expected_features': int(expected) if expected is not None else None,
-                        'provided_features': int(X_model.shape[1]) if X_model is not None else None,
-                        'pred': int(preds[0]) if preds is not None else None,
-                        'max_prob': prob_max
-                    })
-                except Exception:
-                    continue
-
-            # If no model succeeded, use heuristics-only result (no error)
-            if not predictions:
-                heur = _compute_heuristics(clean)
-                ai_bias = heur['ai_score'] - heur['human_score']
-                pred = 1 if ai_bias > 0.3 else 0
-                conf = 0.5 + min(0.3, abs(ai_bias))
-                results = _fallback_analysis_result(
-                    clean,
-                    "Models could not run on this input; result is based on code heuristics (style and structure).",
-                    prediction=pred, confidence=conf
-                )
-                st.session_state.analysis_results = results
-                display_analysis_results(results, clean)
-                return
-
-            # 5) Compute meta features and get ensemble prediction + confidence
-            final_pred = 0
-            confidence = 0.5
-            try:
-                if detector.meta_classifier is not None:
-                    meta_feats = detector.meta_feature_generator.generate_meta_features(predictions, probabilities)
-                    try:
-                        meta_scaled = detector.scaler.transform(meta_feats)
-                    except Exception:
-                        meta_scaled = detector.scaler.fit_transform(meta_feats)
-                    pred_arr = detector.meta_classifier.predict(meta_scaled)
-                    final_pred = int(pred_arr[0])
-                    if hasattr(detector.meta_classifier, 'predict_proba'):
-                        meta_prob = detector.meta_classifier.predict_proba(meta_scaled)
-                        confidence = float(np.max(meta_prob[0]))
-                    else:
-                        confidence = 0.85
-                else:
-                    final_pred = int(detector.predict(X)[0])
-                    confidence = 0.85
-            except Exception:
-                # Fallback: majority vote from base model predictions
-                pred_list = [int(p[0]) for p in predictions.values() if p is not None and len(p) > 0]
-                final_pred = int(np.round(np.mean(pred_list))) if pred_list else 0
-                confidence = 0.6
-
-            # 6) Apply transparent heuristics to adjust borderline cases
-            heur = _compute_heuristics(clean)
-            ai_bias = heur['ai_score'] - heur['human_score']
-            # If model confidence is very low we prefer a conservative fallback,
-            # but avoid always forcing "Human" for marginal cases. Lower the
-            # fallback threshold so low-confidence predictions are only forced
-            # to human when heuristics also indicate human-like code.
-            HUMAN_FALLBACK_THRESHOLD = 0.40
-            BORDER_LOW, BORDER_HIGH = 0.5, 0.8
-            if BORDER_LOW <= confidence <= BORDER_HIGH:
-                if ai_bias >= 0.6:
-                    final_pred = 1
-                    confidence = max(confidence, 0.75)
-                elif ai_bias <= -0.3:
-                    final_pred = 0
-                    confidence = max(confidence, 0.75)
-            # Only default to Human for very low confidence when heuristics
-            # do not suggest AI-like code. This prevents the system from
-            # labeling every uncertain sample as human.
-            if confidence < HUMAN_FALLBACK_THRESHOLD and ai_bias < 0.3:
-                final_pred = 0
-
-            # model agreement (use meta-feature generator helper)
-            try:
-                pred_array = np.array(list(predictions.values()))
-                agreement = float(detector.meta_feature_generator._calculate_agreement_ratio(pred_array)[0])
-            except Exception:
-                agreement = 1.0
-
-            # 6) Build feature importance per-sample (simple weighted proxy)
-            feature_importance = {}
-            try:
-                if baseline_trainer and baseline_trainer.feature_importance:
-                    # Use model performance weights if available
-                    model_importance = detector.get_model_importance()
-                    combined = np.zeros(len(features_df.columns))
-                    for mname, imp in baseline_trainer.feature_importance.items():
-                        if imp is None or len(imp) == 0:
-                            continue
-                        weight = model_importance.get(mname, 1.0 / max(1, len(baseline_trainer.feature_importance)))
-                        # align importance length with features (if mismatch just truncate or pad)
-                        arr = np.array(imp)
-                        if arr.shape[0] < combined.shape[0]:
-                            arr = np.pad(arr, (0, combined.shape[0] - arr.shape[0]), 'constant')
-                        elif arr.shape[0] > combined.shape[0]:
-                            arr = arr[:combined.shape[0]]
-
-                        # Avoid NaN propagation
-                        combined += weight * (np.nan_to_num(arr) * np.nan_to_num(np.abs(X[0])))
-
-                    # Map to feature names and take top contributors
-                    feat_names = list(features_df.columns)
-                    scores = {n: float(v) for n, v in zip(feat_names, combined)}
-                    # sort and take top 15
-                    sorted_items = dict(sorted(scores.items(), key=lambda x: x[1], reverse=True)[:15])
-                    feature_importance = sorted_items
-                else:
-                    feature_importance = generate_feature_importance()
-            except Exception:
-                feature_importance = generate_feature_importance()
-
-            # 7) Attention weights (safe)
-            try:
-                attention_weights = generate_attention_weights(code or clean)
-            except Exception:
-                attention_weights = [[0.0]]
-
-            try:
-                lang_stats = lang_detector.get_language_statistics(clean)
-            except Exception:
-                lang_stats = {}
-            try:
-                explanation = generate_explanation_from_features(
-                    code=clean,
-                    language=language_final,
-                    features_df=features_df,
-                    predictions=predictions,
-                    probabilities=probabilities,
-                    confidence=confidence,
-                    agreement=agreement,
-                    language_stats=lang_stats
-                )
-            except Exception:
-                explanation = (
-                    f"Prediction: {'AI Generated' if final_pred == 1 else 'Human Written'} "
-                    f"(confidence {confidence:.0%}). Based on {len(predictions)} model(s) and code structure."
-                )
-
-            results = {
-                'prediction': final_pred,
-                'confidence': confidence,
-                'explanation': explanation,
-                'model_agreement': agreement,
-                'feature_importance': feature_importance,
-                'attention_weights': attention_weights,
-                'heuristics': heur,
-                'debug_models': debug_rows,
-                'features_df': features_df,
-                'feature_count': int(X.shape[1])
-            }
+            results, clean = analyze_code_core(code, language)
             st.session_state.analysis_results = results
 
         except Exception:
@@ -784,7 +1450,8 @@ def analyze_single_code(code: str, language: str):
                     'prediction': 0, 'confidence': 0.4,
                     'explanation': "Analysis could not complete. Result is a conservative Human-written label. Try again with valid code.",
                     'model_agreement': 0.0, 'feature_importance': {}, 'attention_weights': [[0.0]],
-                    'heuristics': {}, 'debug_models': [], 'features_df': None, 'feature_count': 0
+                    'heuristics': {}, 'debug_models': [], 'features_df': None, 'feature_count': 0,
+                    'individual_confidences': {}, 'algorithm_summary': {}
                 }
             st.session_state.analysis_results = results
 
@@ -817,6 +1484,93 @@ def display_analysis_results(results: dict, code: str):
     st.markdown("### 📋 Explanation")
     st.info(explanation)
 
+    # Display language validation success
+    language_detected = results.get('language_detected', 'unknown')
+    language_selected = results.get('language_selected', 'unknown')
+    
+    if language_detected and language_selected:
+        if language_detected.lower() == language_selected.lower() or (language_detected.lower() != 'unknown'):
+            st.success(f"✅ Language Detection: Code identified as **{language_detected.upper()}**")
+
+    # Display individual algorithm confidences
+    individual_confidences = results.get('individual_confidences', {})
+    algorithm_summary = results.get('algorithm_summary', {})
+    
+    if individual_confidences:
+        st.markdown("### 🎯 Individual Algorithm Confidences")
+        
+        # Create a more visually appealing display
+        col_count = min(3, len(individual_confidences))
+        if col_count > 0:
+            cols = st.columns(col_count)
+            
+            for idx, (algo_name, conf_data) in enumerate(individual_confidences.items()):
+                col_idx = idx % col_count
+                
+                with cols[col_idx]:
+                    # Clean up algorithm name for display
+                    display_name = algo_name.replace('baseline_', '').replace('_', ' ').title()
+                    
+                    if 'error' in conf_data:
+                        st.warning(f"**{display_name}**\nError: Could not compute confidence")
+                    else:
+                        conf_value = conf_data.get('confidence', 0.0)
+                        prediction = conf_data.get('prediction', 0)
+                        ai_prob = conf_data.get('ai_probability', 0.0)
+                        human_prob = conf_data.get('human_probability', 0.0)
+                        
+                        # Color code based on confidence
+                        if conf_value >= 0.75:
+                            color = "🟢"
+                        elif conf_value >= 0.60:
+                            color = "🟡"
+                        else:
+                            color = "🔴"
+                        
+                        pred_label = "AI" if prediction == 1 else "Human"
+                        
+                        st.markdown(f"""
+                        <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; border-left: 4px solid #667eea;">
+                            <b>{display_name}</b><br>
+                            Prediction: <b>{pred_label}</b><br>
+                            Confidence: <b{' style="color: green;"' if conf_value >= 0.75 else ' style="color: orange;"' if conf_value >= 0.60 else ' style="color: red;"'}>{conf_value:.2%}</b> {color}<br>
+                            AI Probability: {ai_prob:.2%}<br>
+                            Human Probability: {human_prob:.2%}
+                        </div>
+                        """, unsafe_allow_html=True)
+        
+        # Add a comparison table
+        try:
+            with st.expander("📈 Algorithm Comparison Table"):
+                conf_df = pd.DataFrame([
+                    {
+                        'Algorithm': algo_name.replace('baseline_', '').replace('_', ' ').title(),
+                        'Prediction': 'AI' if conf_data.get('prediction', 0) == 1 else 'Human',
+                        'Confidence': conf_data.get('confidence', 0.0),
+                        'AI Probability': conf_data.get('ai_probability', 0.0),
+                        'Human Probability': conf_data.get('human_probability', 0.0),
+                        'Probability Difference': conf_data.get('probability_difference', 0.0)
+                    }
+                    for algo_name, conf_data in individual_confidences.items()
+                    if 'error' not in conf_data
+                ])
+                
+                # Format confidence columns as percentages (2 decimals so per-model differences are visible)
+                def _pct_fmt(x):
+                    try:
+                        return f"{float(x):.2%}"
+                    except (TypeError, ValueError):
+                        return "—"
+                for col in ['Confidence', 'AI Probability', 'Human Probability', 'Probability Difference']:
+                    if col in conf_df.columns:
+                        conf_df[col] = conf_df[col].apply(_pct_fmt)
+                
+                st.dataframe(conf_df, use_container_width=True, hide_index=True)
+        except Exception:
+            pass
+
+    st.markdown("### 🔍 Feature Analysis")
+    
     if results.get('features_df') is not None:
         try:
             with st.expander("📊 Produced feature sample & explanation"):
@@ -1053,22 +1807,95 @@ def display_batch_results():
             )
             st.plotly_chart(fig, use_container_width=True)
 
+def _load_real_model_performance():
+    """Load model performance from training results and ensemble performance files."""
+    out = {'test_results': {}, 'model_performance': {}, 'source': None}
+    try:
+        # Prefer models/training_results.json (from improved_train_pipeline)
+        results_path = ROOT / 'models' / 'training_results.json'
+        if results_path.exists():
+            with open(results_path, 'r') as f:
+                data = json.load(f)
+            out['test_results'] = data.get('test_results', {})
+            out['source'] = 'training_results'
+    except Exception:
+        pass
+    try:
+        perf_path = ROOT / 'models' / 'ensemble' / 'performance.json'
+        if perf_path.exists():
+            with open(perf_path, 'r') as f:
+                data = json.load(f)
+            out['model_performance'] = data.get('model_performance', {})
+            if not out['source']:
+                out['source'] = 'ensemble_performance'
+    except Exception:
+        pass
+    # Also use detector's in-memory performance if loaded
+    detector = st.session_state.get('detector')
+    if detector and getattr(detector, 'model_performance', None):
+        for k, v in detector.model_performance.items():
+            if isinstance(v, dict) and 'train_accuracy' in v and k not in out['model_performance']:
+                out['model_performance'][k] = v
+    return out
+
+
 def show_model_insights_page():
     """Display model insights page."""
     st.markdown("## Model Insights & Performance")
     
-    # Model performance overview
+    # Model performance overview – use real data per model
     st.markdown("### Model Performance Overview")
     
-    # Mock performance data
-    performance_data = {
-        'Model': ['Random Forest', 'SVM', 'Logistic Regression', 'Transformer', 'Ensemble'],
-        'Accuracy': [0.89, 0.87, 0.85, 0.91, 0.92],
-        'F1-Score': [0.88, 0.86, 0.84, 0.90, 0.91],
-        'Precision': [0.87, 0.85, 0.83, 0.89, 0.90],
-        'Recall': [0.89, 0.87, 0.85, 0.91, 0.92]
-    }
+    perf = _load_real_model_performance()
+    test_results = perf['test_results']
+    model_perf = perf['model_performance']
     
+    # Build performance table from real metrics (each model gets its own row with its own %)
+    model_names_display = []
+    acc_list, f1_list, precision_list, recall_list = [], [], [], []
+    
+    if test_results:
+        name_map = {
+            'random_forest': 'Random Forest',
+            'svm': 'SVM',
+            'logistic_regression': 'Logistic Regression',
+            'gradient_boosting': 'Gradient Boosting',
+            'ensemble': 'Voting Ensemble',
+            'advanced_ensemble': 'Advanced Ensemble',
+        }
+        for model_key, metrics in test_results.items():
+            clean_name = model_key.replace('baseline_', '')
+            display_name = name_map.get(clean_name, clean_name.replace('_', ' ').title())
+            model_names_display.append(display_name)
+            acc_list.append(round(metrics.get('accuracy', 0), 4))
+            f1_list.append(round(metrics.get('f1_score', 0), 4))
+            precision_list.append(round(metrics.get('accuracy', 0), 4))  # use acc as proxy if no precision
+            recall_list.append(round(metrics.get('accuracy', 0), 4))    # use acc as proxy if no recall
+    elif model_perf:
+        for model_key, metrics in model_perf.items():
+            display_name = model_key.replace('baseline_', '').replace('_', ' ').title()
+            model_names_display.append(display_name)
+            acc = metrics.get('val_accuracy') or metrics.get('train_accuracy') or 0
+            f1 = metrics.get('val_f1') or metrics.get('train_f1') or 0
+            acc_list.append(round(float(acc), 4))
+            f1_list.append(round(float(f1), 4))
+            precision_list.append(round(float(acc), 4))
+            recall_list.append(round(float(f1), 4))
+    else:
+        model_names_display = ['Random Forest', 'SVM', 'Logistic Regression', 'Gradient Boosting', 'Ensemble']
+        acc_list = [0.89, 0.87, 0.85, 0.91, 0.92]
+        f1_list = [0.88, 0.86, 0.84, 0.90, 0.91]
+        precision_list = [0.87, 0.85, 0.83, 0.89, 0.90]
+        recall_list = [0.89, 0.87, 0.85, 0.91, 0.92]
+        st.caption("Showing placeholder metrics. Run training and save results to see real model performance.")
+    
+    performance_data = {
+        'Model': model_names_display,
+        'Accuracy': acc_list,
+        'F1-Score': f1_list,
+        'Precision': precision_list,
+        'Recall': recall_list
+    }
     df = pd.DataFrame(performance_data)
     
     # Performance comparison chart
@@ -1152,42 +1979,53 @@ def show_model_insights_page():
         )
         st.plotly_chart(fig, use_container_width=True)
     
-    # Model comparison
+    # Model comparison radar – use same real per-model data
     st.markdown("### Model Comparison")
     
-    comparison_metrics = ['Accuracy', 'F1-Score', 'Precision', 'Recall', 'Robustness']
-    ensemble_scores = [0.92, 0.91, 0.90, 0.92, 0.87]
-    baseline_scores = [0.89, 0.88, 0.87, 0.89, 0.72]
+    comparison_metrics = ['Accuracy', 'F1-Score', 'Precision', 'Recall']
     
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatterpolar(
-        r=ensemble_scores,
-        theta=comparison_metrics,
-        fill='toself',
-        name='Ensemble Model',
-        line_color='blue'
-    ))
-    
-    fig.add_trace(go.Scatterpolar(
-        r=baseline_scores,
-        theta=comparison_metrics,
-        fill='toself',
-        name='Best Baseline',
-        line_color='red'
-    ))
-    
-    fig.update_layout(
-        polar=dict(
-            radialaxis=dict(
-                visible=True,
-                range=[0, 1]
-            )),
-        showlegend=True,
-        title="Model Performance Radar Chart"
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
+    if not df.empty and len(df) >= 2:
+        fig = go.Figure()
+        colors = ['blue', 'red', 'green', 'orange', 'purple']
+        for i, row in df.iterrows():
+            name = row['Model']
+            r = [row['Accuracy'], row['F1-Score'], row['Precision'], row['Recall']]
+            fig.add_trace(go.Scatterpolar(
+                r=r,
+                theta=comparison_metrics,
+                fill='toself',
+                name=name,
+                line_color=colors[i % len(colors)]
+            ))
+        fig.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 1.05])),
+            showlegend=True,
+            title="Model Performance Radar Chart"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        # Fallback with placeholder
+        fig = go.Figure()
+        fig.add_trace(go.Scatterpolar(
+            r=[0.9, 0.88, 0.87, 0.89],
+            theta=comparison_metrics,
+            fill='toself',
+            name='Ensemble',
+            line_color='blue'
+        ))
+        fig.add_trace(go.Scatterpolar(
+            r=[0.85, 0.84, 0.83, 0.86],
+            theta=comparison_metrics,
+            fill='toself',
+            name='Baseline',
+            line_color='red'
+        ))
+        fig.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+            showlegend=True,
+            title="Model Performance Radar Chart (placeholder)"
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
 def show_settings_page():
     """Display settings page."""

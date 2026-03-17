@@ -82,6 +82,20 @@ python main.py
 streamlit run web_app/app.py
 ```
 
+### Streamlit Cloud (recommended requirements)
+
+Streamlit Community Cloud builds can be slow or fail when installing heavy ML dependencies (e.g. `torch`, `transformers`). For hosting the Streamlit UI (including **🧾 Survey Integrity**) use:
+
+```bash
+pip install -r requirements_streamlit.txt
+```
+
+Then run:
+
+```bash
+streamlit run web_app/app.py
+```
+
 ### Basic Usage
 
 #### Single Code Analysis
@@ -245,6 +259,7 @@ features:
 - **Batch Processing**: Upload multiple files for analysis
 - **Model Insights**: Performance dashboards and visualizations
 - **Settings**: Configurable parameters and preferences
+- **Survey Integrity**: Detect bot-like / fake **free-text** survey responses (CSV/XLSX upload + downloads)
 
 ### Access
 1. Start the web application: `streamlit run web_app/app.py`
@@ -318,6 +333,39 @@ CMD ["streamlit", "run", "web_app/app.py", "--server.port=8501", "--server.addre
 - **Google Cloud**: Compute Engine, Cloud Run
 - **Azure**: Virtual Machines, Container Instances
 - **Heroku**: Easy deployment with Procfile
+
+### Streamlit Community Cloud (step-by-step)
+
+1. Push your repo to GitHub.
+2. In Streamlit Cloud, create a new app and select your repo/branch.
+3. Set the **App file** to:
+   - `web_app/app.py`
+4. Use the lightweight deps for hosting:
+   - If your Streamlit settings allow selecting a requirements file, point it to `requirements_streamlit.txt`
+   - Otherwise, replace root `requirements.txt` with the contents of `requirements_streamlit.txt` for the hosted branch
+5. Deploy. The theme is configured via `.streamlit/config.toml`.
+
+#### Optional: GitHub token (recommended)
+
+The app can fetch code from GitHub URLs in **Single Code Analysis → 🔗 GitHub URL**. For higher GitHub rate limits, set a token:
+
+- **Local**: set env var `GITHUB_TOKEN`
+- **Streamlit Cloud**: add a secret named `GITHUB_TOKEN`
+
+### Optional Survey Webhook API (Render)
+
+Because Streamlit Cloud can’t reliably run a separate long-lived API in the same app, deploy the webhook separately.
+
+1. Ensure these files exist:
+   - `api_service/app.py`
+   - `api_service/requirements.txt`
+   - `api_service/render.yaml`
+2. Create a new Render **Web Service** from your repo.
+3. Render will use `api_service/render.yaml`. After deploy:
+   - Health check: `GET /health`
+   - Single check: `POST /survey/check`
+   - File check: `POST /survey/clean-file`
+
 
 ## 🔬 Research Applications
 

@@ -11,6 +11,8 @@ from collections import Counter, defaultdict
 import textstat
 import logging
 from pathlib import Path
+import zlib
+import math
 
 logger = logging.getLogger("ai_code_detector")
 
@@ -62,6 +64,70 @@ class StatisticalFeatureExtractor:
         
         # Style consistency features
         features.update(self._extract_style_consistency_features(code))
+
+        # Entropy features
+        features.update(self._extract_entropy_features(code))
+        
+        # AI-specific patterns (new)
+        features.update(self._extract_ai_specific_patterns(code, language))
+        
+        return features
+    
+    def _extract_ai_specific_patterns(self, code: str, language: str) -> Dict[str, Any]:
+        """Extract features that specifically distinguish AI-generated code."""
+        features = {}
+        
+        # Verbose variable naming (AI pattern)
+        verbose_vars = len(re.findall(r'\b([a-z_]+_[a-z_]+_[a-z_]+)\b', code))
+        total_vars = len(re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=', code))
+        features['verbose_variable_ratio'] = verbose_vars / max(total_vars, 1)
+        
+        # Type hint density (Python - AI often over-annotates)
+        if language == 'python':
+            type_hints = len(re.findall(r':\s*(int|str|float|bool|List|Dict|Optional|Any|Union|Tuple)\s*[=)]', code))
+            functions = len(re.findall(r'\bdef\s+\w+', code))
+            features['type_hint_density'] = type_hints / max(functions, 1)
+        else:
+            features['type_hint_density'] = 0.0
+        
+        # Docstring density
+        docstrings = len(re.findall(r'""".*?"""', code, re.DOTALL)) + len(re.findall(r"'''.*?'''", code, re.DOTALL))
+        functions = len(re.findall(r'\bdef\s+\w+', code)) + len(re.findall(r'\bfunction\s+\w+', code))
+        features['docstring_density'] = docstrings / max(functions, 1)
+        
+        # Comment style (AI often uses formal comments)
+        lines = code.split('\n')
+        formal_comments = sum(1 for line in lines if line.strip().startswith('#') and 
+                             any(word in line.lower() for word in ['function', 'method', 'class', 'parameter', 'returns', 'raises']))
+        total_comments = sum(1 for line in lines if line.strip().startswith('#'))
+        features['formal_comment_ratio'] = formal_comments / max(total_comments, 1)
+        
+        # Variable name length distribution
+        var_names = re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=', code)
+        if var_names:
+            avg_var_length = np.mean([len(name) for name in var_names])
+            features['avg_variable_name_length'] = avg_var_length
+            # Long names suggest AI
+            long_vars = sum(1 for name in var_names if len(name) > 12)
+            features['long_variable_ratio'] = long_vars / len(var_names)
+        else:
+            features['avg_variable_name_length'] = 0.0
+            features['long_variable_ratio'] = 0.0
+        
+        # Code structure uniformity (AI tends to be more uniform)
+        line_lengths = [len(line) for line in lines if line.strip()]
+        if line_lengths:
+            features['line_length_cv'] = np.std(line_lengths) / max(np.mean(line_lengths), 1)  # Coefficient of variation
+        else:
+            features['line_length_cv'] = 0.0
+        
+        # Import organization (AI often has well-organized imports)
+        import_lines = [i for i, line in enumerate(lines) if line.strip().startswith(('import ', 'from '))]
+        if import_lines and len(lines) > 0:
+            # Check if imports are at the top
+            features['import_organization'] = 1.0 if max(import_lines) < len(lines) * 0.1 else 0.0
+        else:
+            features['import_organization'] = 0.0
         
         return features
     
@@ -630,3 +696,31 @@ class StatisticalFeatureExtractor:
                 consistent_items += 1
         
         return consistent_items / total_items
+
+    def _extract_entropy_features(self, code: str) -> Dict[str, Any]:
+        """Extract entropy and compression-related features."""
+        if not code:
+            return {
+                'shannon_entropy': 0,
+                'compression_ratio': 0,
+                'line_length_variance': 0,
+            }
+            
+        # Shannon entropy
+        prob = [float(code.count(c)) / len(code) for c in dict.fromkeys(list(code))]
+        entropy = -sum([p * math.log(p) / math.log(2.0) for p in prob])
+        
+        # Compression ratio (zlib)
+        compressed = zlib.compress(code.encode('utf-8'))
+        compression_ratio = len(compressed) / len(code)
+        
+        # Line length variance
+        lines = code.split('\n')
+        line_lengths = [len(line) for line in lines]
+        line_length_var = np.var(line_lengths) if line_lengths else 0
+        
+        return {
+            'shannon_entropy': entropy,
+            'compression_ratio': compression_ratio,
+            'line_length_variance': line_length_var,
+        }

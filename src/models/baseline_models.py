@@ -50,34 +50,40 @@ class BaselineModelTrainer:
         # Model configurations
         self.model_configs = {
             'random_forest': {
-                'n_estimators': 200,
-                'max_depth': 20,
+                'n_estimators': 300,
+                'max_depth': 25,
                 'min_samples_split': 5,
                 'min_samples_leaf': 2,
                 'class_weight': 'balanced_subsample',
                 'random_state': 42,
-                'n_jobs': -1
+                'n_jobs': -1,
+                'max_features': 'sqrt',
+                'bootstrap': True
             },
             'svm': {
                 'kernel': 'rbf',
-                'C': 1.0,
+                'C': 10.0,
                 'gamma': 'scale',
                 'class_weight': 'balanced',
                 'random_state': 42,
-                'probability': True
+                'probability': True,
+                'cache_size': 500
             },
             'logistic_regression': {
-                'C': 1.0,
-                'max_iter': 1000,
+                'C': 10.0,
+                'max_iter': 2000,
                 'class_weight': 'balanced',
                 'random_state': 42,
-                'solver': 'liblinear'
+                'solver': 'liblinear',
+                'penalty': 'l2'
             },
             'gradient_boosting': {
                 'n_estimators': 200,
                 'max_depth': 6,
                 'learning_rate': 0.1,
-                'random_state': 42
+                'random_state': 42,
+                'subsample': 0.8,
+                'max_features': 'sqrt'
             }
         }
     
