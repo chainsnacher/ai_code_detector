@@ -2,14 +2,20 @@
 Setup script for AI Code Detection System
 """
 
+import os
 from setuptools import setup, find_packages
 
-# Read the README file
-with open("README.md", "r", encoding="utf-8") as fh:
+# ✅ Get the absolute path to the directory containing setup.py
+base_dir = os.path.abspath(os.path.dirname(__file__))
+
+# ✅ Read the README file using the absolute path
+readme_path = os.path.join(base_dir, "README.md")
+with open(readme_path, "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
-# Read requirements
-with open("requirements.txt", "r", encoding="utf-8") as fh:
+# ✅ Read requirements using the absolute path
+requirements_path = os.path.join(base_dir, "requirements.txt")
+with open(requirements_path, "r", encoding="utf-8") as fh:
     requirements = [
         line.strip()
         for line in fh
@@ -46,7 +52,6 @@ setup(
     python_requires=">=3.8",
     install_requires=requirements,
 
-    # ✅ FIXED extras_require (valid format)
     extras_require={
         "dev": [
             "pytest>=6.0",
