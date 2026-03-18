@@ -62,7 +62,7 @@ setup(
             "myst-parser>=0.15",
         ],
         "gpu": [
-            "torch>=1.9.0",
+            "torch==2.0.1+cpu",
             "torchvision>=0.10.0",
         ],
     },
