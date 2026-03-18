@@ -5,22 +5,29 @@ Setup script for AI Code Detection System
 import os
 from setuptools import setup, find_packages
 
-# ✅ Get the absolute path to the directory containing setup.py
+# ✅ 1. Get the absolute path to the directory containing setup.py
 base_dir = os.path.abspath(os.path.dirname(__file__))
 
-# ✅ Read the README file using the absolute path
+# ✅ 2. Safely read the README file
+long_description = "Advanced AI Code Detection System"
 readme_path = os.path.join(base_dir, "README.md")
-with open(readme_path, "r", encoding="utf-8") as fh:
-    long_description = fh.read()
+if os.path.exists(readme_path):
+    with open(readme_path, "r", encoding="utf-8") as fh:
+        long_description = fh.read()
 
-# ✅ Read requirements using the absolute path
+# ✅ 3. Safely read requirements (CRASH-PROOF)
+requirements = []
 requirements_path = os.path.join(base_dir, "requirements.txt")
-with open(requirements_path, "r", encoding="utf-8") as fh:
-    requirements = [
-        line.strip()
-        for line in fh
-        if line.strip() and not line.startswith("#")
-    ]
+if os.path.exists(requirements_path):
+    with open(requirements_path, "r", encoding="utf-8") as fh:
+        requirements = [
+            line.strip()
+            for line in fh
+            if line.strip() and not line.startswith("#")
+        ]
+else:
+    # This prevents the FileNotFoundError that is stopping your build
+    print("WARNING: requirements.txt not found at build time. Using empty list.")
 
 setup(
     name="ai-code-detector",
@@ -30,7 +37,7 @@ setup(
     description="Advanced AI Code Detection System with Multi-Modal Feature Extraction",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/your-username/ai-code-detector",
+    url="https://github.com/chainsnacher/ai_code_detector",
     packages=find_packages(),
 
     classifiers=[
@@ -92,8 +99,8 @@ setup(
     ],
 
     project_urls={
-        "Bug Reports": "https://github.com/your-username/ai-code-detector/issues",
-        "Source": "https://github.com/your-username/ai-code-detector",
+        "Bug Reports": "https://github.com/chainsnacher/ai_code_detector/issues",
+        "Source": "https://github.com/chainsnacher/ai_code_detector",
         "Documentation": "https://ai-code-detector.readthedocs.io/",
         "Homepage": "https://ai-code-detector.com",
     },
