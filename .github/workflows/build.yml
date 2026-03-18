@@ -11,25 +11,35 @@ jobs:
     timeout-minutes: 30
 
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout Code
+      uses: actions/checkout@v3
 
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.10'
+        python-version: '3.11'
 
-    # ✅ CACHE (before install)
+    # Debug step to confirm file location in the runner
+    - name: List files for debugging
+      run: ls -R
+
     - name: Cache pip
       uses: actions/cache@v3
       with:
         path: ~/.cache/pip
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
 
-    # ✅ INSTALL (fixed)
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+        # Added check to ensure requirements.txt exists before installing
+        if [ -f requirements.txt ]; then
+          pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+        else
+          echo "requirements.txt not found in root!" && exit 1
+        fi
         pip install build twine
 
     - name: Build distribution
