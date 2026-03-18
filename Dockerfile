@@ -4,18 +4,20 @@ FROM python:3.9-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies + curl for healthcheck
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     git \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# ✅ FIXED: Install dependencies using the same extra-index-url as your GitHub Actions
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Copy application code
 COPY . .
@@ -32,7 +34,7 @@ ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
 # Expose port
 EXPOSE 8501
 
-# Health check
+# Health check (Ensure curl is installed above)
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8501/_stcore/health || exit 1
 
