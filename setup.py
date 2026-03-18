@@ -3,7 +3,6 @@ Setup script for AI Code Detection System
 """
 
 from setuptools import setup, find_packages
-import os
 
 # Read the README file
 with open("README.md", "r", encoding="utf-8") as fh:
@@ -11,7 +10,11 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 # Read requirements
 with open("requirements.txt", "r", encoding="utf-8") as fh:
-    requirements = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
+    requirements = [
+        line.strip()
+        for line in fh
+        if line.strip() and not line.startswith("#")
+    ]
 
 setup(
     name="ai-code-detector",
@@ -23,6 +26,7 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/your-username/ai-code-detector",
     packages=find_packages(),
+
     classifiers=[
         "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Developers",
@@ -38,8 +42,11 @@ setup(
         "Topic :: Software Development :: Quality Assurance",
         "Topic :: Education",
     ],
+
     python_requires=">=3.8",
     install_requires=requirements,
+
+    # ✅ FIXED extras_require (valid format)
     extras_require={
         "dev": [
             "pytest>=6.0",
@@ -55,10 +62,11 @@ setup(
             "myst-parser>=0.15",
         ],
         "gpu": [
-            "torch>=1.9.0+cu111",
-            "torchvision>=0.10.0+cu111",
+            "torch>=1.9.0",
+            "torchvision>=0.10.0",
         ],
     },
+
     entry_points={
         "console_scripts": [
             "ai-code-detector=main:main",
@@ -66,14 +74,18 @@ setup(
             "ai-code-detector-web=web_app.app:main",
         ],
     },
+
     include_package_data=True,
     package_data={
         "": ["*.yaml", "*.yml", "*.json", "*.txt", "*.md"],
     },
+
     keywords=[
-        "ai", "code", "detection", "machine-learning", "nlp", "transformer",
-        "codebert", "ensemble", "adversarial", "robustness", "explainable-ai"
+        "ai", "code", "detection", "machine-learning", "nlp",
+        "transformer", "codebert", "ensemble", "adversarial",
+        "robustness", "explainable-ai"
     ],
+
     project_urls={
         "Bug Reports": "https://github.com/your-username/ai-code-detector/issues",
         "Source": "https://github.com/your-username/ai-code-detector",
