@@ -72,6 +72,11 @@ cd ai-code-detector
 pip install -r requirements.txt
 ```
 
+> Note: `requirements.txt` is lightweight for Streamlit Cloud. For full training dependencies (includes `torch/transformers`), use:
+```bash
+pip install -r requirements_full.txt
+```
+
 3. **Run the training pipeline**
 ```bash
 python main.py
@@ -435,3 +440,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 **Built with ❤️ for the developer community**
 
 *This system represents the state-of-the-art in AI code detection, providing both practical utility for educators and industry professionals, while advancing the field through novel technical contributions and robust evaluation methodologies.*
+#   a i _ c o d e _ d e t e c t o r  
+ 
