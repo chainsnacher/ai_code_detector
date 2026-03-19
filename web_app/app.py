@@ -20,6 +20,7 @@ import io
 import re
 import requests
 
+
 # Resolve project root and ensure absolute paths
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / 'src'
@@ -2251,3 +2252,7 @@ def generate_explanation_from_features(
 
 if __name__ == "__main__":
     main()
+
+
+st.write("Current files:", os.listdir())
+st.write("Models exist?", os.path.exists("models"))
