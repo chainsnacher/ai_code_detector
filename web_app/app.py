@@ -2252,7 +2252,3 @@ def generate_explanation_from_features(
 
 if __name__ == "__main__":
     main()
-
-
-st.write("Current files:", os.listdir())
-st.write("Models exist?", os.path.exists("models"))
