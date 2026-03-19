@@ -1,0 +1,42 @@
+{
+  "meta_classifier": "random_forest",
+  "confidence_threshold": 0.7,
+  "use_confidence_weighting": true,
+  "use_meta_features": true,
+  "voting_strategy": "soft",
+  "baseline": {
+    "random_forest": {
+      "n_estimators": 200,
+      "max_depth": 20,
+      "min_samples_split": 5,
+      "min_samples_leaf": 2
+    },
+    "svm": {
+      "kernel": "rbf",
+      "C": 1.0,
+      "gamma": "scale"
+    },
+    "logistic_regression": {
+      "C": 1.0,
+      "max_iter": 1000
+    },
+    "xgboost": {
+      "n_estimators": 200,
+      "max_depth": 6,
+      "learning_rate": 0.1
+    }
+  },
+  "transformer": {
+    "model_name": "microsoft/codebert-base",
+    "max_length": 512,
+    "batch_size": 16,
+    "learning_rate": "2e-5",
+    "epochs": 10,
+    "warmup_steps": 100
+  },
+  "ensemble": {
+    "meta_classifier": "random_forest",
+    "voting_strategy": "soft",
+    "confidence_threshold": 0.7
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "model_performance": {
+    "baseline_random_forest": {
+      "train_accuracy": 1.0,
+      "train_f1": 1.0,
+      "val_accuracy": 1.0,
+      "val_f1": 1.0
+    },
+    "baseline_svm": {
+      "train_accuracy": 1.0,
+      "train_f1": 1.0,
+      "val_accuracy": 1.0,
+      "val_f1": 1.0
+    },
+    "baseline_logistic_regression": {
+      "train_accuracy": 1.0,
+      "train_f1": 1.0,
+      "val_accuracy": 1.0,
+      "val_f1": 1.0
+    },
+    "baseline_gradient_boosting": {
+      "train_accuracy": 1.0,
+      "train_f1": 1.0,
+      "val_accuracy": 1.0,
+      "val_f1": 1.0
+    }
+  },
+  "ensemble_performance": {
+    "meta_classifier": {
+      "train_accuracy": 1.0,
+      "train_f1": 1.0
+    }
+  }
+}
