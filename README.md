@@ -317,59 +317,6 @@ stats = db.get_statistics()
 print(f"Total predictions: {stats['total_predictions']}")
 ```
 
-## 🚀 Deployment
-
-### Docker Deployment
-```dockerfile
-FROM python:3.9-slim
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-
-COPY . .
-EXPOSE 8501
-
-CMD ["streamlit", "run", "web_app/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
-```
-
-### Cloud Deployment
-- **AWS**: EC2, ECS, Lambda
-- **Google Cloud**: Compute Engine, Cloud Run
-- **Azure**: Virtual Machines, Container Instances
-- **Heroku**: Easy deployment with Procfile
-
-### Streamlit Community Cloud (step-by-step)
-
-1. Push your repo to GitHub.
-2. In Streamlit Cloud, create a new app and select your repo/branch.
-3. Set the **App file** to:
-   - `web_app/app.py`
-4. Use the lightweight deps for hosting:
-   - If your Streamlit settings allow selecting a requirements file, point it to `requirements_streamlit.txt`
-   - Otherwise, replace root `requirements.txt` with the contents of `requirements_streamlit.txt` for the hosted branch
-5. Deploy. The theme is configured via `.streamlit/config.toml`.
-
-#### Optional: GitHub token (recommended)
-
-The app can fetch code from GitHub URLs in **Single Code Analysis → 🔗 GitHub URL**. For higher GitHub rate limits, set a token:
-
-- **Local**: set env var `GITHUB_TOKEN`
-- **Streamlit Cloud**: add a secret named `GITHUB_TOKEN`
-
-### Optional Survey Webhook API (Render)
-
-Because Streamlit Cloud can’t reliably run a separate long-lived API in the same app, deploy the webhook separately.
-
-1. Ensure these files exist:
-   - `api_service/app.py`
-   - `api_service/requirements.txt`
-   - `api_service/render.yaml`
-2. Create a new Render **Web Service** from your repo.
-3. Render will use `api_service/render.yaml`. After deploy:
-   - Health check: `GET /health`
-   - Single check: `POST /survey/check`
-   - File check: `POST /survey/clean-file`
 
 
 ## 🔬 Research Applications
@@ -440,5 +387,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 **Built with ❤️ for the developer community**
 
 *This system represents the state-of-the-art in AI code detection, providing both practical utility for educators and industry professionals, while advancing the field through novel technical contributions and robust evaluation methodologies.*
-#   a i _ c o d e _ d e t e c t o r  
+#   a i _ c o d e _ d e t e c t o r 
+ 
  
